@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Concept Attention Explorer</title>
+<style>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d0d0f;
+    --surface: #16181e;
+    --surface2: #1e2028;
+    --border: #2a2d38;
+    --accent: #6c63ff;
+    --accent2: #ff6584;
+    --text: #e8eaf0;
+    --text-muted: #8b8fa8;
+    --radius: 10px;
+    --font: 'Inter', system-ui, sans-serif;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+  a { color: var(--accent); }
+
+  /* ── Layout ── */
+  .app { display: flex; flex-direction: column; min-height: 100vh; max-width: 1400px; margin: 0 auto; padding: 24px 20px; gap: 24px; }
+
+  /* ── Header ── */
+  header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  header h1 span { color: var(--accent); }
+  header p { margin-top: 4px; color: var(--text-muted); font-size: 0.85rem; }
+
+  /* ── Panel ── */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+
+  /* ── Form ── */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .field input, .field textarea, .field select {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-family: var(--font); font-size: 13px; padding: 8px 10px; outline: none;
+    transition: border-color .15s;
+  }
+  .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--accent); }
+  .field textarea { resize: vertical; min-height: 60px; }
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  .slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .slider-val { font-size: 0.8rem; color: var(--text-muted); min-width: 32px; text-align: right; }
+
+  /* ── Upload zone ── */
+  .upload-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius); padding: 32px;
+    text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: var(--accent); background: rgba(108,99,255,.06); }
+  .upload-zone img { max-width: 220px; max-height: 180px; border-radius: 6px; object-fit: cover; display: none; }
+  .upload-zone .icon { font-size: 2rem; opacity: .5; }
+  .upload-zone .hint { color: var(--text-muted); font-size: 0.82rem; }
+  #fileInput { display: none; }
+
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 9px 20px;
+    border-radius: 7px; border: none; cursor: pointer; font-family: var(--font);
+    font-size: 0.87rem; font-weight: 600; transition: opacity .15s, transform .1s;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { opacity: .88; }
+  .btn-secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+  .btn-secondary:hover { border-color: var(--accent); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* ── Progress bar ── */
+  .progress-wrap { display: none; flex-direction: column; gap: 8px; }
+  .progress-wrap.visible { display: flex; }
+  .progress-bar-bg { background: var(--surface2); border-radius: 100px; height: 6px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 100px; transition: width .3s; }
+  .progress-label { font-size: 0.78rem; color: var(--text-muted); }
+
+  /* ── Visualization ── */
+  .viz-section { display: none; flex-direction: column; gap: 18px; }
+  .viz-section.visible { display: flex; }
+
+  /* Time scrubber */
+  .scrubber-panel { display: flex; flex-direction: column; gap: 10px; }
+  .scrubber-controls { display: flex; align-items: center; gap: 12px; }
+  .scrubber-controls input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; height: 6px; }
+  .step-label { font-size: 0.82rem; color: var(--text-muted); min-width: 80px; }
+  .play-btn { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface2); color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1rem; transition: border-color .15s; }
+  .play-btn:hover { border-color: var(--accent); }
+
+  /* Grid */
+  .attention-grid { overflow-x: auto; }
+  .grid-table { border-collapse: collapse; width: 100%; }
+  .grid-table th, .grid-table td { padding: 6px; }
+  .grid-table thead th { font-size: 0.78rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; text-align: center; }
+  .row-label { font-size: 0.78rem; font-weight: 700; color: var(--text-muted); white-space: nowrap; padding-right: 10px; }
+  .row-label.orig { color: #e74c3c; }
+  .row-label.gen { color: var(--accent); }
+
+  /* Heatmap cell */
+  .hm-cell { position: relative; width: 180px; height: 180px; }
+  .hm-cell canvas { border-radius: 6px; display: block; width: 180px; height: 180px; }
+  @media (max-width: 900px) {
+    .hm-cell { width: 130px; height: 130px; }
+    .hm-cell canvas { width: 130px; height: 130px; }
+  }
+
+  /* Status badge */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 100px; font-size: .72rem; font-weight: 700; }
+  .badge-running { background: rgba(108,99,255,.2); color: var(--accent); }
+  .badge-done { background: rgba(39,174,96,.2); color: #27ae60; }
+  .badge-error { background: rgba(231,76,60,.2); color: #e74c3c; }
+
+  /* Error box */
+  .error-box { background: rgba(231,76,60,.1); border: 1px solid rgba(231,76,60,.3); border-radius: 8px; padding: 14px 16px; font-size: .82rem; color: #e74c3c; display: none; }
+  .error-box.visible { display: block; }
+
+  /* Divider */
+  .divider { border: none; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <h1>Concept <span>Attention</span> Explorer</h1>
+    <p>Upload an image · Enter concepts · Watch how FLUX.2 attention evolves across denoising steps</p>
+  </header>
+
+  <!-- Setup panel -->
+  <div class="panel" id="setupPanel">
+    <div class="form-grid">
+
+      <!-- Upload -->
+      <div class="field" style="grid-row: span 2;">
+        <label>Input Image</label>
+        <div class="upload-zone" id="uploadZone">
+          <div class="icon">🖼</div>
+          <div>Drop image here or <strong>click to upload</strong></div>
+          <div class="hint">PNG · JPEG · max 4 MB</div>
+          <img id="previewImg" alt="preview" />
+        </div>
+        <input type="file" id="fileInput" accept=".png,.jpg,.jpeg" />
+      </div>
+
+      <!-- Prompt -->
+      <div class="field">
+        <label>Text Prompt</label>
+        <textarea id="prompt" rows="3" placeholder="A woman wearing an animal costume in a jungle">A woman wearing an animal costume in a jungle</textarea>
+      </div>
+
+      <!-- Concepts -->
+      <div class="field">
+        <label>Concept Tokens <span style="font-weight:400;text-transform:none;">(comma-separated)</span></label>
+        <input type="text" id="concepts" value="woman, animal, costume, jungle" />
+      </div>
+
+      <!-- Size -->
+      <div class="field">
+        <label>Image Size</label>
+        <select id="imgSize">
+          <option value="512">512 × 512</option>
+          <option value="768">768 × 768</option>
+          <option value="1024" selected>1024 × 1024</option>
+        </select>
+      </div>
+
+      <!-- Steps -->
+      <div class="field">
+        <label>Denoising Steps</label>
+        <div class="slider-row">
+          <input type="range" id="numSteps" min="8" max="40" step="1" value="20" />
+          <span class="slider-val" id="numStepsVal">20</span>
+        </div>
+      </div>
+
+      <!-- Img2img strength -->
+      <div class="field">
+        <label>Img2Img Strength <span style="font-weight:400;text-transform:none;">(how much to deviate from original)</span></label>
+        <div class="slider-row">
+          <input type="range" id="strength" min="0.1" max="1.0" step="0.05" value="0.80" />
+          <span class="slider-val" id="strengthVal">0.80</span>
+        </div>
+      </div>
+
+      <!-- Guidance -->
+      <div class="field">
+        <label>Guidance Scale</label>
+        <div class="slider-row">
+          <input type="range" id="guidance" min="1.0" max="10.0" step="0.5" value="4.0" />
+          <span class="slider-val" id="guidanceVal">4.0</span>
+        </div>
+      </div>
+
+      <!-- Seed -->
+      <div class="field">
+        <label>Seed</label>
+        <input type="number" id="seed" value="0" min="0" />
+      </div>
+
+    </div><!-- /form-grid -->
+
+    <hr class="divider" style="margin: 20px 0;" />
+
+    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+      <button class="btn btn-primary" id="runBtn">▶ Run Analysis</button>
+      <span id="statusBadge"></span>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-wrap" id="progressWrap" style="margin-top:14px;">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill" style="width:0%"></div></div>
+      <div class="progress-label" id="progressLabel">Waiting…</div>
+    </div>
+
+    <!-- Error -->
+    <div class="error-box" id="errorBox"></div>
+  </div>
+
+  <!-- Visualization -->
+  <div class="viz-section" id="vizSection">
+
+    <!-- Scrubber -->
+    <div class="panel scrubber-panel">
+      <div style="font-size:.8rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;">Denoising Timestep</div>
+      <div class="scrubber-controls">
+        <button class="play-btn" id="playBtn" title="Play/Pause">▶</button>
+        <input type="range" id="scrubber" min="0" max="0" step="1" value="0" />
+        <span class="step-label" id="stepLabel">Step 0 / 0</span>
+      </div>
+      <div style="font-size:.75rem;color:var(--text-muted);">
+        Drag to scrub through the generation process. Each cell shows cross-attention for that concept at that denoising step.
+      </div>
+    </div>
+
+    <!-- Grid -->
+    <div class="panel attention-grid" id="gridPanel">
+      <!-- Built dynamically -->
+    </div>
+
+  </div>
+
+</div><!-- /app -->
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   State
+   ───────────────────────────────────────────────────────────────────────── */
+const state = {
+  imageFile: null,
+  imageB64: null,
+  jobId: null,
+  ws: null,
+  concepts: [],
+  // temporal data: [step][concept] = HTMLImageElement (heatmap)
+  temporalHeatmapImgs: [],
+  // original heatmap: [concept] = HTMLImageElement
+  origHeatmapImgs: [],
+  // base images
+  origImgEl: null,
+  genImgEl: null,
+  // playback
+  playing: false,
+  playTimer: null,
+  currentStep: 0,
+  totalSteps: 0,
+};
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DOM refs
+   ───────────────────────────────────────────────────────────────────────── */
+const uploadZone  = document.getElementById('uploadZone');
+const fileInput   = document.getElementById('fileInput');
+const previewImg  = document.getElementById('previewImg');
+const runBtn      = document.getElementById('runBtn');
+const progressWrap = document.getElementById('progressWrap');
+const progressFill = document.getElementById('progressFill');
+const progressLabel = document.getElementById('progressLabel');
+const statusBadge = document.getElementById('statusBadge');
+const errorBox    = document.getElementById('errorBox');
+const vizSection  = document.getElementById('vizSection');
+const gridPanel   = document.getElementById('gridPanel');
+const scrubber    = document.getElementById('scrubber');
+const stepLabel   = document.getElementById('stepLabel');
+const playBtn     = document.getElementById('playBtn');
+
+const $    = (id) => document.getElementById(id);
+const bind = (id, ev, fn) => $(id).addEventListener(ev, fn);
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Sliders live-update
+   ───────────────────────────────────────────────────────────────────────── */
+['numSteps', 'strength', 'guidance'].forEach(id => {
+  const el = $(id);
+  const valEl = $(id + 'Val');
+  el.addEventListener('input', () => { valEl.textContent = parseFloat(el.value).toFixed(id === 'numSteps' ? 0 : 2); });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Upload
+   ───────────────────────────────────────────────────────────────────────── */
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+function handleFile(file) {
+  state.imageFile = file;
+  const reader = new FileReader();
+  reader.onload = e => {
+    state.imageB64 = e.target.result.split(',')[1]; // strip data: prefix
+    previewImg.src = e.target.result;
+    previewImg.style.display = 'block';
+    uploadZone.querySelector('.icon').style.display = 'none';
+    uploadZone.querySelector('div:nth-child(2)').style.display = 'none';
+    uploadZone.querySelector('.hint').style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Run
+   ───────────────────────────────────────────────────────────────────────── */
+runBtn.addEventListener('click', async () => {
+  if (!state.imageB64) { alert('Please upload an image first.'); return; }
+  const conceptsList = $('concepts').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!conceptsList.length) { alert('Enter at least one concept.'); return; }
+  if (!$('prompt').value.trim()) { alert('Enter a prompt.'); return; }
+
+  // Reset UI
+  setError('');
+  resetViz();
+  state.concepts = conceptsList;
+  setProgress(0, 'Submitting job…');
+  setStatus('running');
+  runBtn.disabled = true;
+
+  const body = {
+    image_b64: state.imageB64,
+    prompt: $('prompt').value.trim(),
+    concepts: conceptsList,
+    width: parseInt($('imgSize').value),
+    height: parseInt($('imgSize').value),
+    num_inference_steps: parseInt($('numSteps').value),
+    image2image_strength: parseFloat($('strength').value),
+    guidance: parseFloat($('guidance').value),
+    seed: parseInt($('seed').value),
+    cmap: 'plasma',
+  };
+
+  let jobId;
+  try {
+    const resp = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed to start job');
+    jobId = data.job_id;
+    state.jobId = jobId;
+  } catch (e) {
+    setError('Failed to start job: ' + e.message);
+    runBtn.disabled = false;
+    setStatus('error');
+    return;
+  }
+
+  // Connect WebSocket
+  openWebSocket(jobId, body.width, body.height);
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   WebSocket
+   ───────────────────────────────────────────────────────────────────────── */
+function openWebSocket(jobId, w, h) {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${location.host}/ws/${jobId}`;
+
+  if (state.ws) { state.ws.close(); }
+  const ws = new WebSocket(wsUrl);
+  state.ws = ws;
+
+  ws.addEventListener('message', evt => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch { return; }
+
+    if (msg.type === 'ping') return;
+
+    if (msg.type === 'step') {
+      setProgress(msg.progress, `Denoising step ${msg.step + 1} / ${msg.total_steps}`);
+      // Store heatmaps
+      const stepImgs = msg.heatmaps.map(b64 => {
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + b64;
+        return img;
+      });
+      state.temporalHeatmapImgs[msg.step] = stepImgs;
+      state.totalSteps = msg.total_steps;
+      // Live update grid if it's already built
+      if (state.temporalHeatmapImgs.length === 1) {
+        // Build grid on first step
+        buildGrid(state.concepts, w, h);
+      }
+      updateStep(msg.step);
+    }
+
+    if (msg.type === 'done') {
+      setStatus('done');
+      setProgress(100, 'Done!');
+      runBtn.disabled = false;
+
+      state.totalSteps = msg.num_steps;
+
+      // Load original image
+      state.origImgEl = new Image();
+      state.origImgEl.src = 'data:image/png;base64,' + msg.original_image;
+
+      // Load generated image
+      state.genImgEl = new Image();
+      state.genImgEl.src = 'data:image/png;base64,' + msg.generated_image;
+
+      // Load original heatmaps
+      state.origHeatmapImgs = msg.original_heatmaps.map(b64 => {
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + b64;
+        return img;
+      });
+
+      // Finalize grid
+      scrubber.max = Math.max(state.totalSteps - 1, 0);
+      stepLabel.textContent = `Step ${state.currentStep + 1} / ${state.totalSteps}`;
+
+      // Show viz
+      vizSection.classList.add('visible');
+      // Wait for images to load then re-render
+      Promise.all([
+        waitLoad(state.origImgEl),
+        waitLoad(state.genImgEl),
+        ...state.origHeatmapImgs.map(waitLoad),
+      ]).then(() => { updateStep(state.currentStep); });
+
+      ws.close();
+    }
+
+    if (msg.type === 'error') {
+      setError('Pipeline error:\n' + msg.error);
+      setStatus('error');
+      runBtn.disabled = false;
+      ws.close();
+    }
+  });
+
+  ws.addEventListener('error', () => {
+    setError('WebSocket connection failed. Check the server is running.');
+    runBtn.disabled = false;
+    setStatus('error');
+  });
+}
+
+function waitLoad(imgEl) {
+  return new Promise(res => {
+    if (imgEl.complete) res();
+    else imgEl.onload = res;
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Grid builder
+   ───────────────────────────────────────────────────────────────────────── */
+function buildGrid(concepts, w, h) {
+  vizSection.classList.add('visible');
+  scrubber.max = Math.max(state.totalSteps - 1, 0);
+
+  const N = concepts.length;
+
+  let html = '<table class="grid-table"><thead><tr>';
+  html += '<th></th>'; // row label col
+  concepts.forEach(c => { html += `<th>${c}</th>`; });
+  html += '</tr></thead><tbody>';
+
+  // Row 0: original
+  html += '<tr><td class="row-label orig">Original</td>';
+  concepts.forEach((_, ci) => {
+    html += `<td><div class="hm-cell"><canvas id="cv-orig-${ci}" width="${w}" height="${h}"></canvas></div></td>`;
+  });
+  html += '</tr>';
+
+  // Row 1: generated
+  html += '<tr><td class="row-label gen">Generated</td>';
+  concepts.forEach((_, ci) => {
+    html += `<td><div class="hm-cell"><canvas id="cv-gen-${ci}" width="${w}" height="${h}"></canvas></div></td>`;
+  });
+  html += '</tr>';
+
+  html += '</tbody></table>';
+  gridPanel.innerHTML = html;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Rendering
+   ───────────────────────────────────────────────────────────────────────── */
+function updateStep(step) {
+  state.currentStep = step;
+  stepLabel.textContent = `Step ${step + 1} / ${state.totalSteps}`;
+  scrubber.value = step;
+
+  const N = state.concepts.length;
+
+  for (let ci = 0; ci < N; ci++) {
+    // Generated row: temporal heatmaps at this step
+    const genCanvas = document.getElementById(`cv-gen-${ci}`);
+    if (genCanvas) {
+      const stepImgs = state.temporalHeatmapImgs[step];
+      const baseImg = state.genImgEl;
+      if (stepImgs && stepImgs[ci]) {
+        renderHeatmapCell(genCanvas, baseImg, stepImgs[ci]);
+      }
+    }
+
+    // Original row: static heatmaps (show same at every step)
+    const origCanvas = document.getElementById(`cv-orig-${ci}`);
+    if (origCanvas) {
+      const hm = state.origHeatmapImgs[ci];
+      const baseImg = state.origImgEl;
+      if (hm && baseImg) {
+        renderHeatmapCell(origCanvas, baseImg, hm);
+      }
+    }
+  }
+}
+
+function renderHeatmapCell(canvas, baseImg, hmImg) {
+  if (!baseImg || !hmImg) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // Draw base image
+  ctx.clearRect(0, 0, W, H);
+  if (baseImg && baseImg.complete && baseImg.naturalWidth > 0) {
+    ctx.drawImage(baseImg, 0, 0, W, H);
+  } else {
+    ctx.fillStyle = '#1e2028';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Overlay heatmap at 55% opacity
+  if (hmImg && hmImg.complete && hmImg.naturalWidth > 0) {
+    ctx.globalAlpha = 0.58;
+    ctx.drawImage(hmImg, 0, 0, W, H);
+    ctx.globalAlpha = 1.0;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Scrubber + playback
+   ───────────────────────────────────────────────────────────────────────── */
+scrubber.addEventListener('input', () => {
+  stopPlay();
+  updateStep(parseInt(scrubber.value));
+});
+
+playBtn.addEventListener('click', () => {
+  if (state.playing) stopPlay();
+  else startPlay();
+});
+
+function startPlay() {
+  if (state.totalSteps < 2) return;
+  state.playing = true;
+  playBtn.textContent = '⏸';
+  function tick() {
+    const next = (state.currentStep + 1) % state.totalSteps;
+    updateStep(next);
+    state.playTimer = setTimeout(tick, 200); // ~5 fps
+  }
+  tick();
+}
+
+function stopPlay() {
+  state.playing = false;
+  playBtn.textContent = '▶';
+  clearTimeout(state.playTimer);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   UI helpers
+   ───────────────────────────────────────────────────────────────────────── */
+function setProgress(pct, label) {
+  progressWrap.classList.add('visible');
+  progressFill.style.width = pct + '%';
+  progressLabel.textContent = label;
+}
+
+function setStatus(s) {
+  const labels = { running: '⬤ Running', done: '✓ Done', error: '✗ Error' };
+  const classes = { running: 'badge-running', done: 'badge-done', error: 'badge-error' };
+  statusBadge.className = `badge ${classes[s] || ''}`;
+  statusBadge.textContent = labels[s] || s;
+}
+
+function setError(msg) {
+  if (msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.add('visible');
+  } else {
+    errorBox.classList.remove('visible');
+    errorBox.textContent = '';
+  }
+}
+
+function resetViz() {
+  vizSection.classList.remove('visible');
+  gridPanel.innerHTML = '';
+  state.temporalHeatmapImgs = [];
+  state.origHeatmapImgs = [];
+  state.origImgEl = null;
+  state.genImgEl = null;
+  state.currentStep = 0;
+  state.totalSteps = 0;
+  scrubber.value = 0;
+  scrubber.max = 0;
+  stepLabel.textContent = 'Step 0 / 0';
+  stopPlay();
+}
+</script>
+</body>
+</html>

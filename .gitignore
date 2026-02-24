@@ -1,0 +1,13 @@
+*.png
+*.pyc
+__pycache__/
+concept_attention.egg-info
+concept_attention/flux/src/flux.egg-info/PKG-INFO
+src/
+.vscode/
+*.mov
+*.mp4
+*.gif
+.gradio/
+examples/results/
+venv/
