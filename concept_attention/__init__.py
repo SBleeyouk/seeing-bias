@@ -1,2 +1,2 @@
-from concept_attention.flux2.pipeline import ConceptAttentionFlux2Pipeline
+from concept_attention.flux.pipeline import ConceptAttentionFluxPipeline
 from concept_attention.output import ConceptAttentionOutput
