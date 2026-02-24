@@ -21,14 +21,17 @@ from safetensors.torch import load_file as load_sft
 from tqdm import tqdm
 import huggingface_hub
 
-from concept_attention.flux2.flux2.src.flux2.model import Flux2Params
-from concept_attention.flux2.flux2.src.flux2.sampling import (
+# flux2/flux2 uses a src layout — add its src/ dir so we can import flux2.* directly
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "flux2", "src"))
+
+from flux2.model import Flux2Params
+from flux2.sampling import (
     batched_prc_img,
     batched_prc_txt,
     get_schedule,
     scatter_ids,
 )
-from concept_attention.flux2.flux2.src.flux2.util import load_ae, load_mistral_small_embedder
+from flux2.util import load_ae, load_mistral_small_embedder
 from concept_attention.flux2.dit import ModifiedFlux2
 
 
