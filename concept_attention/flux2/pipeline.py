@@ -1,11 +1,12 @@
 """
-    Wrapper pipeline for Flux 2 concept attention.
+    Wrapper pipeline for Flux 1 concept attention.
+    Ported from the Flux 2 pipeline — includes proper img2img, temporal heatmaps,
+    per-step streaming callbacks, and the comparison grid.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import base64
 import io
 import os
-import sys
 from typing import Callable
 
 import PIL
@@ -14,194 +15,145 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import einops
-from torch import Tensor
 from einops import rearrange
-from PIL import Image
-from safetensors.torch import load_file as load_sft
 from tqdm import tqdm
-import huggingface_hub
 
-# flux2/flux2 uses a src layout — add its src/ dir so we can import flux2.* directly
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "flux2", "src"))
+from concept_attention.flux.flux.src.flux.sampling import prepare, get_schedule, get_noise, unpack
+from concept_attention.segmentation import add_noise_to_image, encode_image as vae_encode_image
+from concept_attention.utils import embed_concepts, linear_normalization
+from concept_attention.flux.image_generator import FluxGenerator
 
-from flux2.model import Flux2Params
-from flux2.sampling import (
-    batched_prc_img,
-    batched_prc_txt,
-    get_schedule,
-    scatter_ids,
-)
-from flux2.util import load_ae, load_mistral_small_embedder
-from concept_attention.flux2.dit import ModifiedFlux2
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Output dataclasses
+# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class ConceptAttentionPipelineOutput:
-    """Output from the ConceptAttentionFlux2Pipeline."""
+    """Output from generate_image() or encode_image()."""
     image: PIL.Image.Image | np.ndarray
     concept_heatmaps: list[PIL.Image.Image]
     cross_attention_maps: list[PIL.Image.Image]
-    # Raw output vectors (only populated when cache_vectors=True)
     concept_output_vectors: torch.Tensor | np.ndarray | None = None
     image_output_vectors: torch.Tensor | np.ndarray | None = None
 
 
 @dataclass
 class ConceptAttentionTemporalOutput:
-    """Output from compare_images() with per-timestep heatmaps for animation."""
+    """Output from compare_images() — includes per-timestep heatmaps for animation."""
     original_image: PIL.Image.Image
     generated_image: PIL.Image.Image
     concepts: list[str]
-    # Static heatmaps for original image (from encode_image, one per concept)
     original_heatmaps: list[PIL.Image.Image]
-    # Per-timestep heatmaps for generated image [timestep_idx][concept_idx]
+    # temporal_heatmaps[timestep_idx][concept_idx] → PIL image
     temporal_heatmaps: list[list[PIL.Image.Image]]
     num_denoising_steps: int
 
 
-def compute_heatmaps_from_attention_dicts(
-    concept_attention_dicts: list,
-    num_concepts: int,
-    width: int,
-    height: int,
+# ─────────────────────────────────────────────────────────────────────────────
+# Heatmap utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_heatmaps_from_vectors(
+    image_vectors: torch.Tensor,
+    concept_vectors: torch.Tensor,
     layer_indices: list[int],
     timestep_indices: list[int],
-    key: str = "concept_scores",
+    width: int = 1024,
+    height: int = 1024,
     softmax: bool = True,
-    softmax_temperature: float = 1.0,
+    normalize_concepts: bool = False,
 ) -> torch.Tensor:
     """
-    Compute spatial heatmaps from concept attention dictionaries.
+    Compute spatial heatmaps from cached image/concept vectors.
 
     Args:
-        concept_attention_dicts: List of attention dicts per timestep
-        num_concepts: Number of concepts
-        width: Image width in pixels
-        height: Image height in pixels
-        layer_indices: Which layers/blocks to average over
+        image_vectors:   (time, layers, batch, patches, dim)
+        concept_vectors: (time, layers, batch, concepts, dim)
+        layer_indices:   Which layers to average over
         timestep_indices: Which timesteps to average over
-        key: Which attention key to use ("concept_scores" or "cross_attention_scores")
-        softmax: Whether to apply softmax normalization
-        softmax_temperature: Temperature for softmax
+        width/height:    Image dimensions (used to infer spatial grid)
 
     Returns:
-        Tensor of shape (num_concepts, h, w) with spatial heatmaps
+        Tensor of shape (batch, num_concepts, h, w)
     """
-    # Stack concept attention over time and blocks
-    selected_concept_attention = []
-    for t_idx in timestep_indices:
-        if t_idx >= len(concept_attention_dicts):
-            continue
-        time_step_dicts = concept_attention_dicts[t_idx]
-        selected_blocks = []
-        for b_idx in layer_indices:
-            if b_idx >= len(time_step_dicts):
-                continue
-            selected_blocks.append(time_step_dicts[b_idx][key])
-        if selected_blocks:
-            selected_blocks = torch.stack(selected_blocks)
-            selected_concept_attention.append(selected_blocks)
+    # Collapse head dimension if present
+    if len(image_vectors.shape) == 6:
+        image_vectors = einops.rearrange(
+            image_vectors,
+            "time layers batch head patches dim -> time layers batch patches (head dim)"
+        )
+        concept_vectors = einops.rearrange(
+            concept_vectors,
+            "time layers batch head concepts dim -> time layers batch concepts (head dim)"
+        )
 
-    if not selected_concept_attention:
-        raise ValueError("No valid attention data found for the specified indices")
+    if normalize_concepts:
+        concept_vectors = linear_normalization(concept_vectors, dim=-2)
 
-    selected_concept_attention = torch.stack(selected_concept_attention)
-
-    # Average over time and blocks
-    avg_concept_scores = einops.reduce(
-        selected_concept_attention,
-        "time blocks batch num_concepts num_image_tokens -> batch num_concepts num_image_tokens",
-        "mean",
-    )
-    avg_concept_scores = avg_concept_scores[0]  # Remove batch dim
-
-    # Reshape to spatial grid (16 pixels per latent token)
-    num_image_tokens_h = height // 16
-    num_image_tokens_w = width // 16
-    avg_concept_scores = einops.rearrange(
-        avg_concept_scores,
-        "num_concepts (h w) -> num_concepts h w",
-        h=num_image_tokens_h,
-        w=num_image_tokens_w,
+    # Dot-product similarity: image patches × concept tokens
+    heatmaps = einops.einsum(
+        image_vectors,
+        concept_vectors,
+        "time layers batch patches dim, time layers batch concepts dim"
+        " -> time layers batch concepts patches",
     )
 
-    # Apply softmax normalization across concepts
     if softmax:
-        avg_concept_scores = torch.softmax(avg_concept_scores / softmax_temperature, dim=0)
+        heatmaps = torch.nn.functional.softmax(heatmaps, dim=-2)
 
-    return avg_concept_scores
+    # Safe timestep indexing
+    num_t = heatmaps.shape[0]
+    safe_t = [t for t in timestep_indices if t < num_t] or list(range(num_t))
+    heatmaps = heatmaps[safe_t]
+
+    # Safe layer indexing
+    num_l = heatmaps.shape[1]
+    safe_l = [l for l in layer_indices if l < num_l] or list(range(num_l))
+    heatmaps = heatmaps[:, safe_l]
+
+    heatmaps = einops.reduce(
+        heatmaps,
+        "time layers batch concepts patches -> batch concepts patches",
+        reduction="mean"
+    )
+
+    h = height // 16
+    w = width // 16
+    heatmaps = einops.rearrange(
+        heatmaps,
+        "batch concepts (h w) -> batch concepts h w",
+        h=h, w=w
+    )
+    return heatmaps
 
 
 def heatmaps_to_pil_images(
-    heatmaps: torch.Tensor,
+    heatmaps: torch.Tensor | np.ndarray,
     width: int,
     height: int,
     cmap: str = "plasma",
 ) -> list[PIL.Image.Image]:
-    """
-    Convert tensor heatmaps to colored PIL images.
+    """Convert (num_concepts, h, w) tensor/array to colored PIL images."""
+    if isinstance(heatmaps, torch.Tensor):
+        heatmaps_np = heatmaps.cpu().float().numpy()
+    else:
+        heatmaps_np = heatmaps.astype(np.float32)
 
-    Args:
-        heatmaps: Tensor of shape (num_concepts, h, w)
-        width: Target width
-        height: Target height
-        cmap: Matplotlib colormap name
-
-    Returns:
-        List of PIL images
-    """
-    heatmaps_np = heatmaps.cpu().float().numpy()
     global_min = heatmaps_np.min()
     global_max = heatmaps_np.max()
-
     colormap = plt.get_cmap(cmap)
     pil_images = []
 
     for concept_heatmap in heatmaps_np:
-        # Normalize to [0, 1]
         normalized = (concept_heatmap - global_min) / (global_max - global_min + 1e-8)
-        # Apply colormap
         colored = colormap(normalized)
-        rgb_image = (colored[:, :, :3] * 255).astype(np.uint8)
-        pil_img = PIL.Image.fromarray(rgb_image)
-        # Resize to target dimensions
-        pil_img = pil_img.resize((width, height), resample=PIL.Image.NEAREST)
+        rgb = (colored[:, :, :3] * 255).astype(np.uint8)
+        pil_img = PIL.Image.fromarray(rgb)
+        pil_img = pil_img.resize((width, height), PIL.Image.NEAREST)
         pil_images.append(pil_img)
 
     return pil_images
-
-
-def compute_heatmaps_for_single_step(
-    step_dicts: list,
-    num_concepts: int,
-    width: int,
-    height: int,
-    layer_indices: list[int],
-    key: str = "concept_scores",
-    softmax: bool = True,
-    softmax_temperature: float = 1000.0,
-) -> torch.Tensor:
-    """
-    Compute heatmaps for a single denoising step's attention dicts.
-
-    Args:
-        step_dicts: List of per-block attention dicts for one timestep
-        (same format as concept_attention_dicts[t] in the full pipeline)
-
-    Returns:
-        Tensor of shape (num_concepts, h, w)
-    """
-    return compute_heatmaps_from_attention_dicts(
-        [step_dicts],
-        num_concepts=num_concepts,
-        width=width,
-        height=height,
-        layer_indices=layer_indices,
-        timestep_indices=[0],
-        key=key,
-        softmax=softmax,
-        softmax_temperature=softmax_temperature,
-    )
 
 
 def heatmap_tensor_to_base64(
@@ -210,10 +162,7 @@ def heatmap_tensor_to_base64(
     height: int,
     cmap: str = "plasma",
 ) -> list[str]:
-    """
-    Convert a (num_concepts, h, w) heatmap tensor to a list of base64-encoded PNG strings.
-    Used for streaming heatmaps over WebSocket.
-    """
+    """Convert (num_concepts, h, w) tensor to base64-encoded PNG strings for streaming."""
     pil_images = heatmaps_to_pil_images(heatmap_tensor, width, height, cmap)
     result = []
     for img in pil_images:
@@ -223,316 +172,299 @@ def heatmap_tensor_to_base64(
     return result
 
 
-def stack_output_vectors(
-    concept_attention_dicts: list,
-    key: str,
-) -> torch.Tensor | None:
+def _overlay_heatmap(
+    base_image: PIL.Image.Image,
+    heatmap: PIL.Image.Image,
+    alpha: float = 0.55,
+) -> PIL.Image.Image:
+    """Overlay a heatmap PIL image on top of a base image with transparency."""
+    base = base_image.convert("RGBA")
+    hm = heatmap.resize(base.size, PIL.Image.BILINEAR).convert("RGBA")
+    hm_arr = np.array(hm)
+    hm_arr[:, :, 3] = int(alpha * 255)
+    blended = PIL.Image.alpha_composite(base, PIL.Image.fromarray(hm_arr))
+    return blended.convert("RGB")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ConceptAttentionFluxPipeline:
     """
-    Stack output vectors from concept_attention_dicts.
-    Vectors are already filtered to only requested layers/timesteps.
+    Pipeline for Flux 1 concept attention.
 
-    Args:
-        concept_attention_dicts: List of attention dicts per timestep,
-                                 each containing a list of dicts per layer
-        key: "concept_output_vectors" or "image_output_vectors"
-
-    Returns:
-        Tensor of shape (batch, time, layers, tokens, dim) or None if no vectors
-    """
-    all_timesteps = []
-    for timestep_dicts in concept_attention_dicts:
-        layers = []
-        for layer_dict in timestep_dicts:
-            if key in layer_dict:
-                layers.append(layer_dict[key])
-        if layers:
-            all_timesteps.append(torch.stack(layers))  # (layers, batch, tokens, dim)
-
-    if not all_timesteps:
-        return None
-
-    stacked = torch.stack(all_timesteps)  # (time, layers, batch, tokens, dim)
-    return stacked.permute(2, 0, 1, 3, 4)  # (batch, time, layers, tokens, dim)
-
-
-class ConceptAttentionFlux2Pipeline:
-    """
-    Pipeline for generating images with Flux 2 and extracting concept attention heatmaps.
-
-    This mirrors the interface of ConceptAttentionFluxPipeline for Flux 1.
+    Supports:
+    - generate_image(): text-to-image or img2img with concept heatmaps
+    - encode_image():   extract heatmaps from an existing image
+    - compare_images(): side-by-side comparison with temporal heatmaps + streaming
     """
 
     def __init__(
         self,
-        model_name: str = "flux.2-dev",
-        device: str = "cuda:0",
+        model_name: str = "flux-schnell",
         offload_model: bool = False,
+        device: str = "cuda:0",
     ):
-        """
-        Initialize the Flux 2 pipeline.
-
-        Args:
-            model_name: Model name (currently only "flux.2-dev" supported)
-            device: Device to run on
-            offload_model: Whether to offload models to CPU when not in use
-        """
         self.model_name = model_name
-        self.device = device
         self.offload_model = offload_model
+        self.device = device
 
-        print("Loading Flux 2 models...")
+        print("Loading Flux 1 models...")
+        self.flux_generator = FluxGenerator(
+            model_name=model_name,
+            offload=offload_model,
+            device=device,
+        )
+        print("Flux 1 models loaded successfully!")
 
-        # Load Mistral text embedder
-        self.mistral = load_mistral_small_embedder()
-        self.mistral.eval()
-
-        # Load flow model
-        self._load_flow_model()
-
-        # Load VAE autoencoder
-        self.ae = load_ae(model_name)
-        self.ae.eval()
-
-        print("Flux 2 models loaded successfully!")
-
-    def _load_flow_model(self):
-        """Load the ModifiedFlux2 flow model."""
-        repo_id = "black-forest-labs/FLUX.2-dev"
-        filename = "flux2-dev.safetensors"
-
-        if "FLUX2_MODEL_PATH" in os.environ:
-            weight_path = os.environ["FLUX2_MODEL_PATH"]
-        else:
-            try:
-                weight_path = huggingface_hub.hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    repo_type="model",
-                )
-            except huggingface_hub.errors.RepositoryNotFoundError:
-                print(f"Failed to access {repo_id}. Check your access permissions.")
-                sys.exit(1)
-
-        with torch.device("meta"):
-            self.model = ModifiedFlux2(Flux2Params()).to(torch.bfloat16)
-
-        print(f"Loading weights from {weight_path}")
-        sd = load_sft(weight_path, device=str(self.device))
-        self.model.load_state_dict(sd, strict=False, assign=True)
-        self.model = self.model.to(self.device)
+    # ── Internal denoising loop ───────────────────────────────────────────────
 
     def _denoise(
         self,
-        img: Tensor,
-        img_ids: Tensor,
-        txt: Tensor,
-        txt_ids: Tensor,
-        concepts: Tensor,
-        concept_ids: Tensor,
-        timesteps: list[float],
+        inp: dict,
+        timesteps: list,
         guidance: float,
         cache_vectors: bool = True,
         layer_indices: list[int] | None = None,
         timestep_indices: list[int] | None = None,
-        # Callback for streaming per-step heatmaps:
-        # on_step_callback(step_idx, total_steps, step_dicts) called each denoising step
         on_step_callback: Callable | None = None,
-        # Parameters forwarded to the callback for heatmap computation
         callback_num_concepts: int | None = None,
         callback_width: int | None = None,
         callback_height: int | None = None,
-        callback_softmax_temperature: float = 1000.0,
+        callback_softmax_temperature: float = 1.0,
         callback_cmap: str = "plasma",
-    ) -> tuple[Tensor, list]:
+        width: int = 1024,
+        height: int = 1024,
+    ) -> tuple[torch.Tensor, list]:
         """
-        Denoising loop that tracks concept attention at each step.
+        Denoising loop with per-step concept attention tracking.
 
-        Args:
-            cache_vectors: Whether to cache raw output vectors
-            layer_indices: Which layers to cache vectors for (None = all)
-            timestep_indices: Which timesteps to cache vectors for (None = all)
-            on_step_callback: Optional callback(step_idx, total_steps, step_dicts)
-                called after each denoising step with the raw attention dicts.
-                If callback_num_concepts/width/height are also provided, the callback
-                receives pre-computed base64 heatmaps instead of raw dicts.
-
-        Returns:
-            Tuple of (denoised_img, concept_attention_dicts)
+        on_step_callback(step_idx, total_steps, b64_heatmaps_list) is called
+        after each denoising step if provided. Heatmaps are base64-encoded PNGs,
+        one per concept — ready to stream to a frontend.
         """
+        from concept_attention.flux.flux.src.flux.sampling import denoise as flux_denoise
+
+        # Use the existing denoise function from flux for the full loop
+        img = inp["img"]
         guidance_vec = torch.full(
-            (img.shape[0],), guidance, device=img.device, dtype=img.dtype
+            (img.shape[0],), guidance,
+            device=img.device, dtype=img.dtype
         )
-        concept_attention_dicts = []
+
+        concept_attention_dicts_all = []
         total_steps = len(timesteps) - 1
 
         for step_idx, (t_curr, t_prev) in enumerate(tqdm(
             zip(timesteps[:-1], timesteps[1:]),
             total=total_steps,
-            desc="Denoising"
+            desc="Denoising",
         )):
-            # Check if this timestep should be tracked
-            should_track_timestep = (
+            should_cache = (
                 timestep_indices is None or step_idx in timestep_indices
-            )
+            ) or (on_step_callback is not None)
 
             t_vec = torch.full(
-                (img.shape[0],), t_curr, dtype=img.dtype, device=img.device
+                (img.shape[0],), t_curr,
+                dtype=img.dtype, device=img.device
             )
 
-            pred, current_concept_attention_dict = self.model(
-                x=img,
-                x_ids=img_ids,
+            _, step_dicts = self.flux_generator.model(
+                img=img,
+                img_ids=inp["img_ids"],
+                txt=inp["txt"],
+                txt_ids=inp["txt_ids"],
+                concepts=inp["concepts"],
+                concept_ids=inp["concept_ids"],
+                concept_vec=inp["concept_vec"],
+                y=inp["concept_vec"],
                 timesteps=t_vec,
-                ctx=txt,
-                ctx_ids=txt_ids,
                 guidance=guidance_vec,
-                concepts=concepts,
-                concept_ids=concept_ids,
-                # Always cache at this step so the callback can read it
-                cache_vectors=(cache_vectors and should_track_timestep) or (on_step_callback is not None),
+                stop_after_multimodal_attentions=False,
+                joint_attention_kwargs=None,
+                cache_vectors=should_cache,
                 layer_indices=layer_indices,
-                current_timestep=step_idx,
             )
-            concept_attention_dicts.append(current_concept_attention_dict)
-            img = img + (t_prev - t_curr) * pred
 
-            # Fire callback with per-step heatmaps
-            if on_step_callback is not None:
-                if (
-                    callback_num_concepts is not None
-                    and callback_width is not None
-                    and callback_height is not None
-                ):
-                    effective_layer_indices = layer_indices if layer_indices is not None else [5, 6, 7]
-                    heatmap_tensor = compute_heatmaps_for_single_step(
-                        current_concept_attention_dict,
-                        num_concepts=callback_num_concepts,
-                        width=callback_width,
-                        height=callback_height,
-                        layer_indices=effective_layer_indices,
-                        key="concept_scores",
+            # Euler step
+            pred_list = [d.get("pred", None) for d in step_dicts if "pred" in d]
+            if pred_list:
+                pred = pred_list[-1]
+                img = img + (t_prev - t_curr) * pred
+            else:
+                # Fallback: call full flux denoise for this single step
+                img, _, _ = flux_denoise(
+                    self.flux_generator.model,
+                    **{k: v for k, v in inp.items()},
+                    timesteps=[t_curr, t_prev],
+                    guidance=guidance,
+                    joint_attention_kwargs=None,
+                    cache_vectors=should_cache,
+                    layer_indices=layer_indices,
+                    timestep_indices=[0],
+                )
+
+            concept_attention_dicts_all.append(step_dicts)
+
+            # Fire per-step callback with base64 heatmaps
+            if on_step_callback is not None and callback_num_concepts is not None:
+                # Build vectors for this step
+                step_img_vecs = []
+                step_con_vecs = []
+                for d in step_dicts:
+                    if "output_space_image_vectors" in d:
+                        step_img_vecs.append(d["output_space_image_vectors"])
+                    if "output_space_concept_vectors" in d:
+                        step_con_vecs.append(d["output_space_concept_vectors"])
+
+                if step_img_vecs and step_con_vecs:
+                    iv = torch.stack(step_img_vecs).unsqueeze(0)   # (1, layers, batch, patches, dim)
+                    cv = torch.stack(step_con_vecs).unsqueeze(0)   # (1, layers, batch, concepts, dim)
+                    eff_layers = layer_indices if layer_indices else list(range(len(step_img_vecs)))
+                    hm = compute_heatmaps_from_vectors(
+                        iv, cv,
+                        layer_indices=eff_layers,
+                        timestep_indices=[0],
+                        width=callback_width or width,
+                        height=callback_height or height,
                         softmax=True,
-                        softmax_temperature=callback_softmax_temperature,
-                    )
-                    b64_heatmaps = heatmap_tensor_to_base64(
-                        heatmap_tensor, callback_width, callback_height, callback_cmap
-                    )
-                    on_step_callback(step_idx, total_steps, b64_heatmaps)
-                else:
-                    on_step_callback(step_idx, total_steps, current_concept_attention_dict)
+                    )[0]  # (num_concepts, h, w)
+                    b64 = heatmap_tensor_to_base64(hm, callback_width or width, callback_height or height, callback_cmap)
+                    on_step_callback(step_idx, total_steps, b64)
 
-        return img, concept_attention_dicts
+        return img, concept_attention_dicts_all
+
+    def _stack_vectors(self, concept_attention_dicts_all: list) -> dict:
+        """
+        Stack per-step, per-layer attention dicts into tensors.
+        Returns dict with keys: output_space_image_vectors, output_space_concept_vectors,
+        cross_attention_image_vectors, cross_attention_concept_vectors.
+        Each tensor shape: (time, layers, batch, tokens, dim)
+        """
+        keys = [
+            "output_space_image_vectors",
+            "output_space_concept_vectors",
+            "cross_attention_image_vectors",
+            "cross_attention_concept_vectors",
+        ]
+        result = {}
+        for key in keys:
+            all_timesteps = []
+            for step_dicts in concept_attention_dicts_all:
+                layers = [d[key] for d in step_dicts if key in d]
+                if layers:
+                    all_timesteps.append(torch.stack(layers))
+            if all_timesteps:
+                result[key] = torch.stack(all_timesteps)  # (time, layers, batch, tokens, dim)
+        return result
+
+    # ── generate_image ────────────────────────────────────────────────────────
 
     @torch.no_grad()
     def generate_image(
         self,
         prompt: str,
         concepts: list[str],
-        width: int = 2048,
-        height: int = 2048,
-        num_inference_steps: int = 28,
-        guidance: float = 4.0,
+        width: int = 1024,
+        height: int = 1024,
+        layer_indices: list[int] | None = None,
+        num_inference_steps: int = 4,
+        guidance: float = 0.0,
         seed: int = 0,
-        layer_indices: list[int] = None,
-        timesteps: list[int] = None,
+        timesteps: list[int] | None = None,
         return_pil_heatmaps: bool = True,
         softmax: bool = True,
-        softmax_temperature: float = 1000.0,
         cmap: str = "plasma",
         cache_vectors: bool = True,
-        # img2img params
+        # img2img
         init_image: PIL.Image.Image | None = None,
         image2image_strength: float = 0.8,
-        # Streaming callback: called each denoising step with (step_idx, total_steps, b64_heatmaps)
+        # streaming callback
         on_step_callback: Callable | None = None,
     ) -> ConceptAttentionPipelineOutput:
         """
-        Generate an image with Flux 2 and extract concept attention heatmaps.
+        Generate an image with Flux 1, extracting concept attention heatmaps.
 
-        Args:
-            prompt: Text prompt for generation
-            concepts: List of concept words to track attention for
-            width: Output image width (should be divisible by 16)
-            height: Output image height (should be divisible by 16)
-            num_inference_steps: Number of denoising steps
-            guidance: Guidance scale
-            seed: Random seed
-            layer_indices: Which transformer blocks to average over (default: last 3)
-            timesteps: Which timesteps to average over (default: last 30%)
-            return_pil_heatmaps: Whether to return PIL images (True) or numpy arrays
-            softmax: Whether to apply softmax normalization
-            softmax_temperature: Temperature for softmax
-            cmap: Matplotlib colormap for heatmaps
-            cache_vectors: Whether to cache raw output vectors (default: True)
-
-        Returns:
-            ConceptAttentionPipelineOutput with image, concept_heatmaps, cross_attention_maps,
-            and optionally concept_output_vectors and image_output_vectors
+        For img2img pass init_image and image2image_strength (0.0–1.0).
+        on_step_callback(step_idx, total_steps, b64_heatmaps) is called each step.
         """
-        # Default layer indices (last 3 of 8 double blocks)
-        if layer_indices is None:
-            layer_indices = [5, 6, 7]
+        assert height == width, "Height and width must be equal"
 
-        # Default timestep indices (last 30% of steps) — used for final heatmap aggregation
+        if layer_indices is None:
+            layer_indices = list(range(15, 19))
+
+        # Default aggregation timesteps
         if timesteps is None:
             start_idx = int(num_inference_steps * 0.7)
-            timesteps = list(range(start_idx, num_inference_steps - 1))
+            timesteps = list(range(start_idx, num_inference_steps))
 
-        # Validate inputs
-        assert all(0 <= idx < 8 for idx in layer_indices), "layer_indices must be in [0, 7]"
-
-        # Encode text prompt
-        ctx = self.mistral([prompt]).to(torch.bfloat16)
-        ctx, ctx_ids = batched_prc_txt(ctx)
-
-        # Encode concepts
-        concept_embeddings = self.mistral(concepts).to(torch.bfloat16)
-        concepts_tensor, concept_ids = batched_prc_txt(concept_embeddings)
-        # Extract single token representation per concept (at position 510)
-        concepts_tensor = concepts_tensor[:, 510].unsqueeze(0)
-        concept_ids = concept_ids[:, 510].unsqueeze(0)
-
-        # Offload text encoder if needed
-        if self.offload_model:
-            self.mistral = self.mistral.cpu()
-            torch.cuda.empty_cache()
-            self.model = self.model.to(self.device)
-
-        # Prepare initial latents (pure noise or img2img noised latent)
-        shape = (1, 128, height // 16, width // 16)
-        generator = torch.Generator(device=self.device).manual_seed(seed)
-        noise = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device=self.device)
-
-        seq_len = (height // 16) * (width // 16)
-        full_schedule = get_schedule(num_inference_steps, seq_len)
+        # ── Build initial latent ──────────────────────────────────────────────
+        x = get_noise(
+            1, height, width,
+            device=self.device,
+            dtype=torch.bfloat16,
+            seed=seed,
+        )
+        full_schedule = get_schedule(
+            num_inference_steps,
+            x.shape[-1] * x.shape[-2] // 4,
+            shift=(not self.flux_generator.is_schnell),
+        )
 
         if init_image is not None and image2image_strength > 0.0:
-            # img2img: start from a partially noised version of the init image
+            # img2img: encode init image and blend with noise
             init_resized = init_image.resize((width, height), PIL.Image.LANCZOS).convert("RGB")
-            img_array = np.array(init_resized).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
-            img_tensor = img_tensor.to(self.device, dtype=torch.bfloat16)
-            encoded_init = self.ae.encode(img_tensor)
+            img_np = np.array(init_resized).astype(np.float32) / 127.5 - 1.0  # [-1, 1]
+            img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)
+            img_t = img_t.to(self.device, dtype=torch.bfloat16)
 
-            # Truncate schedule: strength=1.0 → full noise (start from beginning)
-            # strength=0.0 → no noise (skip denoising), strength=0.8 → 80% of diffusion
+            if self.offload_model:
+                self.flux_generator.ae.encoder.to(self.device)
+            encoded_init = self.flux_generator.ae.encode(img_t)
+            if self.offload_model:
+                self.flux_generator.ae = self.flux_generator.ae.cpu()
+                torch.cuda.empty_cache()
+
+            # Truncate schedule based on strength
             start_step = int(num_inference_steps * (1.0 - image2image_strength))
             t_start = full_schedule[start_step]
             active_schedule = full_schedule[start_step:]
-
-            noisy_init = (1.0 - t_start) * encoded_init + t_start * noise
-            x, x_ids = batched_prc_img(noisy_init)
+            x = t_start * x + (1.0 - t_start) * encoded_init.to(x.dtype)
         else:
-            x, x_ids = batched_prc_img(noise)
             active_schedule = full_schedule
 
-        # For temporal callback: all steps are tracked (not just the aggregation window)
+        # ── Encode text + concepts ────────────────────────────────────────────
+        if self.flux_generator.offload:
+            self.flux_generator.t5 = self.flux_generator.t5.to(self.device)
+            self.flux_generator.clip = self.flux_generator.clip.to(self.device)
+
+        inp = prepare(
+            t5=self.flux_generator.t5,
+            clip=self.flux_generator.clip,
+            img=x,
+            prompt=prompt,
+        )
+        concept_embeddings, concept_ids, concept_vec = embed_concepts(
+            self.flux_generator.clip,
+            self.flux_generator.t5,
+            concepts,
+        )
+        inp["concepts"] = concept_embeddings.to(x.device)
+        inp["concept_ids"] = concept_ids.to(x.device)
+        inp["concept_vec"] = concept_vec.to(x.device)
+
+        if self.flux_generator.offload:
+            self.flux_generator.t5 = self.flux_generator.t5.cpu()
+            self.flux_generator.clip = self.flux_generator.clip.cpu()
+            torch.cuda.empty_cache()
+            self.flux_generator.model = self.flux_generator.model.to(self.device)
+
+        # ── Denoising loop ────────────────────────────────────────────────────
         all_timestep_indices = list(range(len(active_schedule) - 1))
 
-        x, concept_attention_dicts = self._denoise(
-            x, x_ids, ctx, ctx_ids,
-            concepts=concepts_tensor,
-            concept_ids=concept_ids,
+        img_out, concept_attention_dicts_all = self._denoise(
+            inp=inp,
             timesteps=active_schedule,
             guidance=guidance,
             cache_vectors=cache_vectors,
@@ -542,90 +474,68 @@ class ConceptAttentionFlux2Pipeline:
             callback_num_concepts=len(concepts),
             callback_width=width,
             callback_height=height,
-            callback_softmax_temperature=softmax_temperature,
             callback_cmap=cmap,
+            width=width,
+            height=height,
         )
 
-        # Map the aggregation timestep indices to the active schedule
+        # ── Decode ────────────────────────────────────────────────────────────
+        self.flux_generator.model.cpu()
+        torch.cuda.empty_cache()
+        self.flux_generator.ae.decoder.to(img_out.device)
+
+        img_out = unpack(img_out.float(), height, width)
+        img_out = self.flux_generator.ae.decode(img_out.to(torch.float32).to(self.device))
+
+        self.flux_generator.ae.decoder.cpu()
+        torch.cuda.empty_cache()
+        self.flux_generator.model.to(self.device)
+
+        img_out = img_out.clamp(-1, 1)
+        img_out = rearrange(img_out[0], "c h w -> h w c")
+        pil_image = PIL.Image.fromarray((127.5 * (img_out + 1.0)).cpu().byte().numpy())
+
+        # ── Compute heatmaps ──────────────────────────────────────────────────
+        stacked = self._stack_vectors(concept_attention_dicts_all)
+
+        # Map aggregation timestep indices to the active schedule
         effective_total = len(active_schedule) - 1
-        agg_timesteps = [t for t in timesteps if t < effective_total]
-        if not agg_timesteps:
-            agg_timesteps = list(range(effective_total))
+        agg_timesteps = [t for t in timesteps if t < effective_total] or list(range(effective_total))
 
-        # Offload flow model, load VAE
-        if self.offload_model:
-            self.model = self.model.cpu()
-            torch.cuda.empty_cache()
-
-        # Decode latents to image
-        x = torch.cat(scatter_ids(x, x_ids)).squeeze(2)
-        x = self.ae.decode(x).float()
-
-        # Convert to PIL image
-        x = x.clamp(-1, 1)
-        x = rearrange(x[0], "c h w -> h w c")
-        image = PIL.Image.fromarray((127.5 * (x + 1.0)).cpu().byte().numpy())
-
-        # Compute concept heatmaps (output space attention) — averaged over agg window
-        concept_heatmaps_tensor = compute_heatmaps_from_attention_dicts(
-            concept_attention_dicts,
-            num_concepts=len(concepts),
-            width=width,
-            height=height,
+        concept_heatmaps_tensor = compute_heatmaps_from_vectors(
+            stacked["output_space_image_vectors"],
+            stacked["output_space_concept_vectors"],
             layer_indices=layer_indices,
             timestep_indices=agg_timesteps,
-            key="concept_scores",
+            width=width, height=height,
             softmax=softmax,
-            softmax_temperature=softmax_temperature,
-        )
+        )[0]  # (num_concepts, h, w)
 
-        # Compute cross-attention heatmaps
-        cross_attention_tensor = compute_heatmaps_from_attention_dicts(
-            concept_attention_dicts,
-            num_concepts=len(concepts),
-            width=width,
-            height=height,
+        cross_attention_tensor = compute_heatmaps_from_vectors(
+            stacked["cross_attention_image_vectors"],
+            stacked["cross_attention_concept_vectors"],
             layer_indices=layer_indices,
             timestep_indices=agg_timesteps,
-            key="cross_attention_scores",
+            width=width, height=height,
             softmax=softmax,
-            softmax_temperature=softmax_temperature,
-        )
+        )[0]
 
-        # Convert to PIL images if requested
         if return_pil_heatmaps:
-            concept_heatmaps = heatmaps_to_pil_images(
-                concept_heatmaps_tensor, width, height, cmap
-            )
-            cross_attention_maps = heatmaps_to_pil_images(
-                cross_attention_tensor, width, height, cmap
-            )
+            concept_heatmaps = heatmaps_to_pil_images(concept_heatmaps_tensor, width, height, cmap)
+            cross_attention_maps = heatmaps_to_pil_images(cross_attention_tensor, width, height, cmap)
         else:
             concept_heatmaps = concept_heatmaps_tensor.cpu().numpy()
             cross_attention_maps = cross_attention_tensor.cpu().numpy()
 
-        # Restore models if offloaded
-        if self.offload_model:
-            self.mistral = self.mistral.to(self.device)
-
-        # Stack raw output vectors if caching is enabled
-        concept_output_vectors = None
-        image_output_vectors = None
-        if cache_vectors:
-            concept_output_vectors = stack_output_vectors(
-                concept_attention_dicts, "concept_output_vectors"
-            )
-            image_output_vectors = stack_output_vectors(
-                concept_attention_dicts, "image_output_vectors"
-            )
-
         return ConceptAttentionPipelineOutput(
-            image=image,
+            image=pil_image,
             concept_heatmaps=concept_heatmaps,
             cross_attention_maps=cross_attention_maps,
-            concept_output_vectors=concept_output_vectors,
-            image_output_vectors=image_output_vectors,
+            concept_output_vectors=stacked.get("output_space_concept_vectors"),
+            image_output_vectors=stacked.get("output_space_image_vectors"),
         )
+
+    # ── encode_image ──────────────────────────────────────────────────────────
 
     @torch.no_grad()
     def encode_image(
@@ -633,161 +543,138 @@ class ConceptAttentionFlux2Pipeline:
         image: PIL.Image.Image,
         concepts: list[str],
         prompt: str = "",
-        width: int = 2048,
-        height: int = 2048,
-        layer_indices: list[int] = None,
+        width: int = 1024,
+        height: int = 1024,
+        layer_indices: list[int] | None = None,
         num_steps: int = 4,
         noise_timestep: int = 2,
         seed: int = 0,
         return_pil_heatmaps: bool = True,
         softmax: bool = True,
-        softmax_temperature: float = 1000.0,
         cmap: str = "plasma",
         cache_vectors: bool = True,
     ) -> ConceptAttentionPipelineOutput:
         """
         Encode an existing image and extract concept attention heatmaps.
-
-        Args:
-            image: Input PIL image
-            concepts: List of concept words to track attention for
-            prompt: Optional text prompt describing the image
-            width: Processing width (image will be resized)
-            height: Processing height (image will be resized)
-            layer_indices: Which transformer blocks to average over
-            num_steps: Number of noise levels to use
-            noise_timestep: Which noise level to add
-            seed: Random seed for noise
-            return_pil_heatmaps: Whether to return PIL images
-            softmax: Whether to apply softmax normalization
-            softmax_temperature: Temperature for softmax
-            cmap: Matplotlib colormap for heatmaps
-            cache_vectors: Whether to cache raw output vectors (default: True)
-
-        Returns:
-            ConceptAttentionPipelineOutput with original image, concept_heatmaps, cross_attention_maps,
-            and optionally concept_output_vectors and image_output_vectors
+        Adds noise to the image at a specified timestep and runs one forward pass.
         """
-        # Default layer indices
+        assert height == width, "Height and width must be equal"
+
         if layer_indices is None:
-            layer_indices = [5, 6, 7]
+            layer_indices = list(range(15, 19))
 
-        # Resize image to target dimensions
-        image_resized = image.resize((width, height), PIL.Image.LANCZOS)
+        device = self.device
+        print("Encoding image...")
 
-        # Encode text prompt and concepts
-        ctx = self.mistral([prompt] if prompt else [""]).to(torch.bfloat16)
-        ctx, ctx_ids = batched_prc_txt(ctx)
+        # ── VAE encode ────────────────────────────────────────────────────────
+        image_resized = image.resize((width, height), PIL.Image.LANCZOS).convert("RGB")
+        img_np = np.array(image_resized).astype(np.float32) / 127.5 - 1.0  # [-1, 1]
+        img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)
+        img_t = img_t.to(device, dtype=torch.bfloat16)
 
-        concept_embeddings = self.mistral(concepts).to(torch.bfloat16)
-        concepts_tensor, concept_ids = batched_prc_txt(concept_embeddings)
-        concepts_tensor = concepts_tensor[:, 510].unsqueeze(0)
-        concept_ids = concept_ids[:, 510].unsqueeze(0)
-
-        if self.offload_model:
-            self.mistral = self.mistral.cpu()
+        if self.flux_generator.offload:
+            self.flux_generator.ae.encoder.to(device)
+        encoded = self.flux_generator.ae.encode(img_t)
+        if self.flux_generator.offload:
+            self.flux_generator.ae = self.flux_generator.ae.cpu()
             torch.cuda.empty_cache()
-            self.model = self.model.to(self.device)
 
-        # Encode image to latent space
-        img_array = np.array(image_resized).astype(np.float32) / 127.5 - 1.0
-        img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
-        img_tensor = img_tensor.to(self.device, dtype=torch.bfloat16)
-
-        # Encode with VAE
-        encoded_image = self.ae.encode(img_tensor)
-
-        # Add noise
-        schedule = get_schedule(num_steps, encoded_image.shape[2] * encoded_image.shape[3])
+        # ── Add noise ─────────────────────────────────────────────────────────
+        schedule = get_schedule(
+            num_steps,
+            encoded.shape[-1] * encoded.shape[-2] // 4,
+            shift=(not self.flux_generator.is_schnell),
+        )
         t = schedule[noise_timestep]
 
-        generator = torch.Generator(device=self.device).manual_seed(seed)
-        noise = torch.randn_like(encoded_image, generator=generator)
-        noisy_latent = (1 - t) * encoded_image + t * noise
+        generator = torch.Generator(device=device).manual_seed(seed)
+        noise = torch.randn_like(encoded, generator=generator)
+        noisy = (1.0 - t) * encoded + t * noise
 
-        # Prepare for model
-        x, x_ids = batched_prc_img(noisy_latent)
+        # ── Prepare inputs ────────────────────────────────────────────────────
+        if self.flux_generator.offload:
+            self.flux_generator.t5 = self.flux_generator.t5.to(device)
+            self.flux_generator.clip = self.flux_generator.clip.to(device)
 
-        # Run single forward pass
-        t_vec = torch.full((1,), t, dtype=x.dtype, device=x.device)
-        guidance_vec = torch.full((1,), 0.0, dtype=x.dtype, device=x.device)
+        inp = prepare(
+            t5=self.flux_generator.t5,
+            clip=self.flux_generator.clip,
+            img=noisy,
+            prompt=prompt,
+        )
+        concept_embeddings, concept_ids, concept_vec = embed_concepts(
+            self.flux_generator.clip,
+            self.flux_generator.t5,
+            concepts,
+        )
+        inp["concepts"] = concept_embeddings.to(noisy.device)
+        inp["concept_ids"] = concept_ids.to(noisy.device)
+        inp["concept_vec"] = concept_vec.to(noisy.device)
 
-        _, concept_attention_dict = self.model(
-            x=x,
-            x_ids=x_ids,
+        if self.flux_generator.offload:
+            self.flux_generator.t5 = self.flux_generator.t5.cpu()
+            self.flux_generator.clip = self.flux_generator.clip.cpu()
+            torch.cuda.empty_cache()
+            self.flux_generator.model = self.flux_generator.model.to(device)
+
+        # ── Single forward pass ───────────────────────────────────────────────
+        guidance_vec = torch.full((noisy.shape[0],), 0.0, device=noisy.device, dtype=noisy.dtype)
+        t_vec = torch.full((noisy.shape[0],), t, dtype=noisy.dtype, device=noisy.device)
+
+        _, step_dicts = self.flux_generator.model(
+            img=inp["img"],
+            img_ids=inp["img_ids"],
+            txt=inp["txt"],
+            txt_ids=inp["txt_ids"],
+            concepts=inp["concepts"],
+            concept_ids=inp["concept_ids"],
+            concept_vec=inp["concept_vec"],
+            y=inp["concept_vec"],
             timesteps=t_vec,
-            ctx=ctx,
-            ctx_ids=ctx_ids,
             guidance=guidance_vec,
-            concepts=concepts_tensor,
-            concept_ids=concept_ids,
+            stop_after_multimodal_attentions=True,
+            joint_attention_kwargs=None,
             cache_vectors=cache_vectors,
             layer_indices=layer_indices,
-            current_timestep=0,
         )
 
-        # Wrap in list for compatibility with compute function
-        concept_attention_dicts = [concept_attention_dict]
+        # ── Compute heatmaps ──────────────────────────────────────────────────
+        # Wrap as single-step for stacking: shape (1, layers, batch, tokens, dim)
+        img_vecs = torch.stack([d["output_space_image_vectors"] for d in step_dicts if "output_space_image_vectors" in d]).unsqueeze(0)
+        con_vecs = torch.stack([d["output_space_concept_vectors"] for d in step_dicts if "output_space_concept_vectors" in d]).unsqueeze(0)
+        cross_img_vecs = torch.stack([d["cross_attention_image_vectors"] for d in step_dicts if "cross_attention_image_vectors" in d]).unsqueeze(0)
+        cross_con_vecs = torch.stack([d["cross_attention_concept_vectors"] for d in step_dicts if "cross_attention_concept_vectors" in d]).unsqueeze(0)
 
-        # Compute heatmaps
-        concept_heatmaps_tensor = compute_heatmaps_from_attention_dicts(
-            concept_attention_dicts,
-            num_concepts=len(concepts),
-            width=width,
-            height=height,
+        concept_heatmaps_tensor = compute_heatmaps_from_vectors(
+            img_vecs, con_vecs,
             layer_indices=layer_indices,
             timestep_indices=[0],
-            key="concept_scores",
+            width=width, height=height,
             softmax=softmax,
-            softmax_temperature=softmax_temperature,
-        )
+        )[0]
 
-        cross_attention_tensor = compute_heatmaps_from_attention_dicts(
-            concept_attention_dicts,
-            num_concepts=len(concepts),
-            width=width,
-            height=height,
+        cross_attention_tensor = compute_heatmaps_from_vectors(
+            cross_img_vecs, cross_con_vecs,
             layer_indices=layer_indices,
             timestep_indices=[0],
-            key="cross_attention_scores",
+            width=width, height=height,
             softmax=softmax,
-            softmax_temperature=softmax_temperature,
-        )
+        )[0]
 
         if return_pil_heatmaps:
-            concept_heatmaps = heatmaps_to_pil_images(
-                concept_heatmaps_tensor, width, height, cmap
-            )
-            cross_attention_maps = heatmaps_to_pil_images(
-                cross_attention_tensor, width, height, cmap
-            )
+            concept_heatmaps = heatmaps_to_pil_images(concept_heatmaps_tensor, width, height, cmap)
+            cross_attention_maps = heatmaps_to_pil_images(cross_attention_tensor, width, height, cmap)
         else:
             concept_heatmaps = concept_heatmaps_tensor.cpu().numpy()
             cross_attention_maps = cross_attention_tensor.cpu().numpy()
-
-        if self.offload_model:
-            self.model = self.model.cpu()
-            self.mistral = self.mistral.to(self.device)
-            torch.cuda.empty_cache()
-
-        # Stack raw output vectors if caching is enabled
-        concept_output_vectors = None
-        image_output_vectors = None
-        if cache_vectors:
-            concept_output_vectors = stack_output_vectors(
-                concept_attention_dicts, "concept_output_vectors"
-            )
-            image_output_vectors = stack_output_vectors(
-                concept_attention_dicts, "image_output_vectors"
-            )
 
         return ConceptAttentionPipelineOutput(
             image=image_resized,
             concept_heatmaps=concept_heatmaps,
             cross_attention_maps=cross_attention_maps,
-            concept_output_vectors=concept_output_vectors,
-            image_output_vectors=image_output_vectors,
         )
+
+    # ── compare_images ────────────────────────────────────────────────────────
 
     @torch.no_grad()
     def compare_images(
@@ -797,37 +684,34 @@ class ConceptAttentionFlux2Pipeline:
         concepts: list[str],
         width: int = 1024,
         height: int = 1024,
-        layer_indices: list[int] = None,
-        num_inference_steps: int = 28,
-        noise_timestep: int = 1,
+        layer_indices: list[int] | None = None,
+        num_inference_steps: int = 4,
+        noise_timestep: int = 2,
         seed: int = 0,
         softmax: bool = True,
-        softmax_temperature: float = 1000.0,
         cmap: str = "plasma",
         image2image_strength: float = 0.8,
-        guidance: float = 4.0,
-        # Streaming: called each generation step with (step_idx, total_steps, b64_heatmaps_list)
+        guidance: float = 0.0,
+        save_path: str | None = None,
         on_step_callback: Callable | None = None,
-    ) -> "ConceptAttentionTemporalOutput":
+    ) -> ConceptAttentionTemporalOutput:
         """
-        Compare concept heatmaps between an original (encoded) image and a
-        generated image conditioned on the original via img2img.
+        Compare concept heatmaps between an original image and an img2img-generated image.
 
-        Returns a ConceptAttentionTemporalOutput with:
-        - Static heatmaps for the original image
-        - Per-timestep heatmaps for the generated image (for animation)
+        Grid layout (x=concepts, y=original|generated):
+        ┌──────────────────┬──────────────────┐
+        │  Original Image  │  Generated Image  │  ← Row 0: complete images
+        ├──────────────────┼──────────────────┤
+        │ (1) concept HM   │ (1) concept HM    │  ← Row 1..N: heatmaps per concept
+        └──────────────────┴──────────────────┘
 
-        Grid layout:
-            columns: concept tokens  (x-axis)
-            rows:    original | generated  (y-axis)
-            time:    animated via timestep slider
+        on_step_callback(step_idx, total_steps, b64_heatmaps) is called each
+        generation step — use this to stream heatmaps to a frontend in real time.
 
-        Args:
-            image2image_strength: 0.0 = stay close to original, 1.0 = generate freely
+        Returns ConceptAttentionTemporalOutput with:
+            - original_heatmaps: static heatmaps for the original image
+            - temporal_heatmaps[step][concept]: heatmaps at each denoising step
         """
-        if layer_indices is None:
-            layer_indices = [5, 6, 7]
-
         print("=" * 50)
         print("Step 1/2: Encoding original image...")
         print("=" * 50)
@@ -840,9 +724,7 @@ class ConceptAttentionFlux2Pipeline:
             layer_indices=layer_indices,
             noise_timestep=noise_timestep,
             seed=seed,
-            return_pil_heatmaps=True,
             softmax=softmax,
-            softmax_temperature=softmax_temperature,
             cmap=cmap,
         )
 
@@ -850,13 +732,10 @@ class ConceptAttentionFlux2Pipeline:
         print(f"Step 2/2: Generating image (img2img strength={image2image_strength})...")
         print("=" * 50)
 
-        # Collect per-timestep heatmaps for animation
+        # Collect per-step heatmaps for animation
         temporal_heatmaps: list[list[PIL.Image.Image]] = []
-        temporal_b64: list[list[str]] = []
 
         def _collect_and_forward(step_idx, total_steps, b64_list):
-            temporal_b64.append(b64_list)
-            # Convert base64 back to PIL for local use
             pil_list = []
             for b64 in b64_list:
                 img_bytes = base64.b64decode(b64)
@@ -875,11 +754,24 @@ class ConceptAttentionFlux2Pipeline:
             guidance=guidance,
             seed=seed,
             softmax=softmax,
-            softmax_temperature=softmax_temperature,
             cmap=cmap,
             init_image=original_image,
             image2image_strength=image2image_strength,
             on_step_callback=_collect_and_forward,
+        )
+
+        # ── Build static comparison grid ──────────────────────────────────────
+        fig = self._build_comparison_grid(
+            original_image=original_output.image,
+            generated_image=generated_output.image,
+            original_heatmaps=original_output.concept_heatmaps,
+            generated_heatmaps=generated_output.concept_heatmaps,
+            concepts=concepts,
+            prompt=prompt,
+            width=width,
+            height=height,
+            cmap=cmap,
+            save_path=save_path,
         )
 
         return ConceptAttentionTemporalOutput(
@@ -890,3 +782,203 @@ class ConceptAttentionFlux2Pipeline:
             temporal_heatmaps=temporal_heatmaps,
             num_denoising_steps=len(temporal_heatmaps),
         )
+
+    def _build_comparison_grid(
+        self,
+        original_image: PIL.Image.Image,
+        generated_image: PIL.Image.Image,
+        original_heatmaps: list[PIL.Image.Image],
+        generated_heatmaps: list[PIL.Image.Image],
+        concepts: list[str],
+        prompt: str,
+        width: int,
+        height: int,
+        cmap: str = "plasma",
+        save_path: str | None = None,
+    ):
+        """
+        Build grid:
+            2 columns: original | generated
+            Row 0: complete images (red border)
+            Rows 1..N: heatmap per concept overlaid on image (blue border)
+        """
+        num_rows = 1 + len(concepts)
+
+        fig, axes = plt.subplots(
+            num_rows, 2,
+            figsize=(10, 4 * num_rows),
+            gridspec_kw={"hspace": 0.45, "wspace": 0.08}
+        )
+
+        orig_resized = original_image.resize((width, height), PIL.Image.LANCZOS)
+        images = [orig_resized, generated_image]
+        col_titles = ["Original", "Generated"]
+        heatmaps_cols = [original_heatmaps, generated_heatmaps]
+
+        # Row 0: complete images
+        for col in range(2):
+            ax = axes[0, col]
+            ax.imshow(images[col])
+            ax.set_title(col_titles[col], fontsize=13, fontweight="bold",
+                         color="#c0392b", pad=8)
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#e74c3c")
+                spine.set_linewidth(3)
+            ax.set_xticks([]); ax.set_yticks([])
+        axes[0, 0].set_ylabel("Complete\nImages", fontsize=10, fontweight="bold",
+                               color="#c0392b", rotation=90, labelpad=10)
+
+        # Rows 1..N: concept heatmaps
+        for row, concept in enumerate(concepts, start=1):
+            for col in range(2):
+                ax = axes[row, col]
+                blended = _overlay_heatmap(images[col], heatmaps_cols[col][row - 1], alpha=0.6)
+                ax.imshow(blended)
+                for spine in ax.spines.values():
+                    spine.set_edgecolor("#2980b9")
+                    spine.set_linewidth(2)
+                ax.set_xticks([]); ax.set_yticks([])
+            axes[row, 0].set_ylabel(f"({row}) {concept}", fontsize=10,
+                                     fontweight="bold", color="#2980b9",
+                                     rotation=90, labelpad=10)
+
+        fig.suptitle(f'Concept Attention\nPrompt: "{prompt}"',
+                     fontsize=12, fontweight="bold", y=1.01)
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
+            fig.savefig(save_path, bbox_inches="tight", dpi=150)
+            print(f"Saved to: {save_path}")
+
+        plt.tight_layout()
+        plt.show()
+        return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Interactive Colab UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_interactive_ui(pipe: ConceptAttentionFluxPipeline):
+    """
+    Launch an interactive Colab widget UI.
+
+    Usage:
+        from concept_attention.flux.pipeline import run_interactive_ui
+        run_interactive_ui(pipe)
+    """
+    import ipywidgets as widgets
+    from IPython.display import display, clear_output
+
+    title = widgets.HTML("<h2 style='color:#2c3e50'>🎨 Concept Attention Explorer</h2>")
+
+    upload_btn = widgets.FileUpload(accept=".png,.jpg,.jpeg", multiple=False,
+                                    description="Upload Image",
+                                    layout=widgets.Layout(width="250px"))
+    upload_label = widgets.Label("No image uploaded yet.")
+
+    prompt_box = widgets.Textarea(
+        value="A woman wearing an animal costume in a jungle",
+        description="Prompt:",
+        layout=widgets.Layout(width="100%", height="70px"),
+        style={"description_width": "60px"}
+    )
+    concepts_box = widgets.Text(
+        value="woman, animal, costume, jungle",
+        description="Concepts:",
+        layout=widgets.Layout(width="100%"),
+        style={"description_width": "60px"}
+    )
+    concepts_hint = widgets.HTML("<small style='color:gray'>Comma-separated concept tokens</small>")
+    size_dropdown = widgets.Dropdown(options=[512, 768, 1024], value=512,
+                                     description="Image size:",
+                                     style={"description_width": "80px"})
+    seed_input = widgets.IntText(value=0, description="Seed:",
+                                  layout=widgets.Layout(width="150px"),
+                                  style={"description_width": "40px"})
+    strength_slider = widgets.FloatSlider(
+        value=0.85, min=0.1, max=1.0, step=0.05,
+        description="Img2Img strength:",
+        style={"description_width": "130px"},
+        layout=widgets.Layout(width="420px"),
+        readout_format=".2f",
+    )
+    strength_hint = widgets.HTML(
+        "<small style='color:gray'>Lower = stays closer to original | Higher = follows prompt more</small>"
+    )
+    run_btn = widgets.Button(description="▶ Run", button_style="success",
+                              layout=widgets.Layout(width="120px", height="36px"))
+    save_checkbox = widgets.Checkbox(
+        value=True,
+        description="Save output to /content/results/comparison.png",
+        indent=False
+    )
+    output_area = widgets.Output()
+
+    state = {"image": None}
+
+    def on_upload(change):
+        if upload_btn.value:
+            import io as _io
+            file_info = list(upload_btn.value.values())[0]
+            img = PIL.Image.open(_io.BytesIO(file_info["content"])).convert("RGB")
+            state["image"] = img
+            upload_label.value = f"✅ Loaded: {file_info['metadata']['name']} ({img.width}×{img.height})"
+
+    upload_btn.observe(on_upload, names="value")
+
+    def on_run(b):
+        with output_area:
+            clear_output(wait=True)
+            if state["image"] is None:
+                print("⚠️  Please upload an image first."); return
+            raw_concepts = [c.strip() for c in concepts_box.value.split(",") if c.strip()]
+            if not raw_concepts:
+                print("⚠️  Please enter at least one concept token."); return
+            prompt = prompt_box.value.strip()
+            if not prompt:
+                print("⚠️  Please enter a prompt."); return
+
+            size = size_dropdown.value
+            seed = seed_input.value
+            strength = strength_slider.value
+            save_path = "/content/results/comparison.png" if save_checkbox.value else None
+
+            print(f"Prompt   : {prompt}")
+            print(f"Concepts : {raw_concepts}")
+            print(f"Size     : {size}×{size}  |  Seed: {seed}  |  Strength: {strength:.2f}")
+
+            try:
+                result = pipe.compare_images(
+                    original_image=state["image"],
+                    prompt=prompt,
+                    concepts=raw_concepts,
+                    width=size, height=size,
+                    seed=seed,
+                    save_path=save_path,
+                    image2image_strength=strength,
+                )
+                if save_path:
+                    print(f"\n✅ Saved to {save_path}")
+            except Exception as e:
+                print(f"❌ Error: {e}"); raise
+
+    run_btn.on_click(on_run)
+
+    ui = widgets.VBox([
+        title,
+        widgets.VBox([widgets.HTML("<b>1. Upload your image</b>"), upload_btn, upload_label]),
+        widgets.HTML("<hr>"),
+        widgets.VBox([
+            widgets.HTML("<b>2. Set prompt & concepts</b>"),
+            prompt_box, concepts_box, concepts_hint,
+            widgets.HBox([size_dropdown, seed_input]),
+            strength_slider, strength_hint,
+            save_checkbox,
+        ]),
+        widgets.HTML("<hr>"),
+        widgets.VBox([widgets.HTML("<b>3. Run</b>"), run_btn]),
+        output_area,
+    ], layout=widgets.Layout(padding="16px", max_width="750px"))
+
+    display(ui)
