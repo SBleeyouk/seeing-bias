@@ -22,6 +22,12 @@
   html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
   a { color: var(--accent); }
 
+  /* ── Nav ── */
+  nav { display: flex; align-items: center; gap: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  nav a { color: var(--text-muted); text-decoration: none; font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 6px; transition: color .15s, background .15s; }
+  nav a:hover { color: var(--text); background: var(--surface2); }
+  nav a.active { color: var(--accent); background: rgba(108,99,255,.12); }
+
   /* ── Layout ── */
   .app { display: flex; flex-direction: column; min-height: 100vh; max-width: 1400px; margin: 0 auto; padding: 24px 20px; gap: 24px; }
 
@@ -105,9 +111,15 @@
   /* Heatmap cell */
   .hm-cell { position: relative; width: 180px; height: 180px; }
   .hm-cell canvas { border-radius: 6px; display: block; width: 180px; height: 180px; }
+  /* Base image cell (no overlay) */
+  .base-cell { position: relative; width: 180px; height: 180px; }
+  .base-cell canvas { border-radius: 6px; display: block; width: 180px; height: 180px; border: 1px solid var(--border); }
+  .grid-table thead th.col-image { color: var(--text); font-size: 0.78rem; }
   @media (max-width: 900px) {
     .hm-cell { width: 130px; height: 130px; }
     .hm-cell canvas { width: 130px; height: 130px; }
+    .base-cell { width: 130px; height: 130px; }
+    .base-cell canvas { width: 130px; height: 130px; }
   }
 
   /* Status badge */
@@ -126,6 +138,12 @@
 </head>
 <body>
 <div class="app">
+
+  <!-- Nav -->
+  <nav>
+    <a href="/index.html" class="active">Concept Attention</a>
+    <a href="/faceswap.html">Face-Swap Attention</a>
+  </nav>
 
   <!-- Header -->
   <header>
@@ -182,10 +200,10 @@
 
       <!-- Img2img strength -->
       <div class="field">
-        <label>Img2Img Strength <span style="font-weight:400;text-transform:none;">(how much to deviate from original)</span></label>
+        <label>Preservation Strength <span style="font-weight:400;text-transform:none;">(1.0 = keep original · 0.0 = full regeneration)</span></label>
         <div class="slider-row">
-          <input type="range" id="strength" min="0.1" max="1.0" step="0.05" value="0.80" />
-          <span class="slider-val" id="strengthVal">0.80</span>
+          <input type="range" id="strength" min="0.0" max="1.0" step="0.05" value="0.85" />
+          <span class="slider-val" id="strengthVal">0.85</span>
         </div>
       </div>
 
@@ -481,11 +499,14 @@ function buildGrid(concepts, w, h) {
 
   let html = '<table class="grid-table"><thead><tr>';
   html += '<th></th>'; // row label col
+  html += '<th class="col-image">Image</th>'; // pure image col
   concepts.forEach(c => { html += `<th>${c}</th>`; });
   html += '</tr></thead><tbody>';
 
   // Row 0: original
   html += '<tr><td class="row-label orig">Original</td>';
+  // Pure image cell
+  html += `<td><div class="base-cell"><canvas id="cv-orig-base" width="${w}" height="${h}"></canvas></div></td>`;
   concepts.forEach((_, ci) => {
     html += `<td><div class="hm-cell"><canvas id="cv-orig-${ci}" width="${w}" height="${h}"></canvas></div></td>`;
   });
@@ -493,6 +514,8 @@ function buildGrid(concepts, w, h) {
 
   // Row 1: generated
   html += '<tr><td class="row-label gen">Generated</td>';
+  // Pure image cell
+  html += `<td><div class="base-cell"><canvas id="cv-gen-base" width="${w}" height="${h}"></canvas></div></td>`;
   concepts.forEach((_, ci) => {
     html += `<td><div class="hm-cell"><canvas id="cv-gen-${ci}" width="${w}" height="${h}"></canvas></div></td>`;
   });
@@ -511,6 +534,10 @@ function updateStep(step) {
   scrubber.value = step;
 
   const N = state.concepts.length;
+
+  // Pure image cells (no heatmap overlay) — repaint if images are loaded
+  renderBaseCell('cv-orig-base', state.origImgEl);
+  renderBaseCell('cv-gen-base', state.genImgEl);
 
   for (let ci = 0; ci < N; ci++) {
     // Generated row: temporal heatmaps at this step
@@ -532,6 +559,22 @@ function updateStep(step) {
         renderHeatmapCell(origCanvas, baseImg, hm);
       }
     }
+  }
+}
+
+function renderBaseCell(canvasId, imgEl) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || !imgEl) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (imgEl.complete && imgEl.naturalWidth > 0) {
+    ctx.drawImage(imgEl, 0, 0, W, H);
+  } else {
+    ctx.fillStyle = '#1e2028';
+    ctx.fillRect(0, 0, W, H);
+    // Retry when loaded
+    imgEl.onload = () => renderBaseCell(canvasId, imgEl);
   }
 }
 

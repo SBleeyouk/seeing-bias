@@ -132,6 +132,87 @@ class Job:
 # Global job store
 _jobs: dict[str, Job] = {}
 _pipeline = None
+_faceswap_pipeline = None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Face-swap request / job models
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FaceSwapRequest(BaseModel):
+    original_b64: str       # image whose face will be REPLACED
+    target_b64: str         # image with the DONOR face
+    prompt: str
+    concepts: list[str]
+    width: int = 512
+    height: int = 512
+    num_steps: int = 4
+    noise_timestep: int = 2
+    seed: int = 0
+    cmap: str = "plasma"
+
+
+class FaceSwapJob:
+    def __init__(self, job_id: str, request: FaceSwapRequest):
+        self.job_id = job_id
+        self.request = request
+        self.status = "pending"
+        self.progress = 0
+        self.error: str | None = None
+        # Results (populated when done)
+        self.original_image_b64: str | None = None
+        self.target_image_b64: str | None = None
+        self.swapped_image_b64: str | None = None
+        self.original_heatmaps_b64: list[str] | None = None
+        self.target_heatmaps_b64: list[str] | None = None
+        self.swapped_heatmaps_b64: list[str] | None = None
+        self.concepts: list[str] | None = None
+        # WebSocket streaming
+        self._ws_queue: asyncio.Queue | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop):
+        self._loop = loop
+        self._ws_queue = asyncio.Queue()
+
+    def _send_ws(self, msg: dict):
+        if self._loop and self._ws_queue:
+            self._loop.call_soon_threadsafe(self._ws_queue.put_nowait, msg)
+
+    def on_progress(self, stage: str, current: int, total: int):
+        self.progress = int(100 * current / max(total, 1))
+        self._send_ws({"type": "progress", "stage": stage,
+                       "current": current, "total": total,
+                       "progress": self.progress})
+
+    def finish(self, orig_b64, tgt_b64, swap_b64,
+               orig_hm, tgt_hm, swap_hm, concepts):
+        self.status = "done"
+        self.progress = 100
+        self.original_image_b64 = orig_b64
+        self.target_image_b64 = tgt_b64
+        self.swapped_image_b64 = swap_b64
+        self.original_heatmaps_b64 = orig_hm
+        self.target_heatmaps_b64 = tgt_hm
+        self.swapped_heatmaps_b64 = swap_hm
+        self.concepts = concepts
+        self._send_ws({
+            "type": "done",
+            "original_image": orig_b64,
+            "target_image": tgt_b64,
+            "swapped_image": swap_b64,
+            "original_heatmaps": orig_hm,
+            "target_heatmaps": tgt_hm,
+            "swapped_heatmaps": swap_hm,
+            "concepts": concepts,
+        })
+
+    def fail(self, error: str):
+        self.status = "error"
+        self.error = error
+        self._send_ws({"type": "error", "error": error})
+
+
+_faceswap_jobs: dict[str, FaceSwapJob] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -185,12 +266,53 @@ def _run_pipeline(job: Job):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Face-swap pipeline runner
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_faceswap(job: FaceSwapJob):
+    global _faceswap_pipeline
+    try:
+        req = job.request
+        job.status = "running"
+
+        original_image = _b64_to_pil(req.original_b64)
+        target_image   = _b64_to_pil(req.target_b64)
+
+        result = _faceswap_pipeline.swap_and_analyze(
+            original_image=original_image,
+            target_image=target_image,
+            prompt=req.prompt,
+            concepts=req.concepts,
+            width=req.width,
+            height=req.height,
+            num_steps=req.num_steps,
+            noise_timestep=req.noise_timestep,
+            seed=req.seed,
+            cmap=req.cmap,
+            on_progress=job.on_progress,
+        )
+
+        job.finish(
+            orig_b64=_pil_to_b64(result.original_image),
+            tgt_b64=_pil_to_b64(result.target_image),
+            swap_b64=_pil_to_b64(result.swapped_image),
+            orig_hm=[_pil_to_b64(h) for h in result.original_heatmaps],
+            tgt_hm=[_pil_to_b64(h) for h in result.target_heatmaps],
+            swap_hm=[_pil_to_b64(h) for h in result.swapped_heatmaps],
+            concepts=req.concepts,
+        )
+    except Exception:
+        job.fail(traceback.format_exc())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # FastAPI app factory
 # ─────────────────────────────────────────────────────────────────────────────
 
-def create_app(pipeline) -> FastAPI:
-    global _pipeline
+def create_app(pipeline, faceswap_pipeline=None) -> FastAPI:
+    global _pipeline, _faceswap_pipeline
     _pipeline = pipeline
+    _faceswap_pipeline = faceswap_pipeline
 
     app = FastAPI(title="Concept Attention Explorer")
 
@@ -307,6 +429,84 @@ def create_app(pipeline) -> FastAPI:
             except Exception:
                 pass
 
+    # ── Face-swap endpoints ────────────────────────────────────────────────
+
+    @app.post("/api/faceswap")
+    async def start_faceswap(req: FaceSwapRequest):
+        if _faceswap_pipeline is None:
+            raise HTTPException(status_code=503,
+                detail="Face-swap pipeline not loaded. Pass faceswap_pipeline= to create_app().")
+        job_id = str(uuid.uuid4())
+        job = FaceSwapJob(job_id, req)
+        loop = asyncio.get_event_loop()
+        job.set_loop(loop)
+        _faceswap_jobs[job_id] = job
+        threading.Thread(target=_run_faceswap, args=(job,), daemon=True).start()
+        return {"job_id": job_id}
+
+    @app.get("/api/faceswap/{job_id}")
+    async def get_faceswap_job(job_id: str):
+        job = _faceswap_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "progress": job.progress,
+            "error": job.error,
+            "original_image_b64": job.original_image_b64,
+            "target_image_b64": job.target_image_b64,
+            "swapped_image_b64": job.swapped_image_b64,
+            "original_heatmaps_b64": job.original_heatmaps_b64,
+            "target_heatmaps_b64": job.target_heatmaps_b64,
+            "swapped_heatmaps_b64": job.swapped_heatmaps_b64,
+            "concepts": job.concepts,
+        }
+
+    @app.websocket("/ws/faceswap/{job_id}")
+    async def faceswap_ws(websocket: WebSocket, job_id: str):
+        await websocket.accept()
+        job = _faceswap_jobs.get(job_id)
+        if job is None:
+            await websocket.send_json({"type": "error", "error": "Job not found"})
+            await websocket.close()
+            return
+        if job._ws_queue is None:
+            await websocket.send_json({"type": "error", "error": "Queue not initialized"})
+            await websocket.close()
+            return
+        try:
+            if job.status == "done":
+                await websocket.send_json({
+                    "type": "done",
+                    "original_image": job.original_image_b64,
+                    "target_image": job.target_image_b64,
+                    "swapped_image": job.swapped_image_b64,
+                    "original_heatmaps": job.original_heatmaps_b64,
+                    "target_heatmaps": job.target_heatmaps_b64,
+                    "swapped_heatmaps": job.swapped_heatmaps_b64,
+                    "concepts": job.concepts,
+                })
+                return
+            elif job.status == "error":
+                await websocket.send_json({"type": "error", "error": job.error})
+                return
+            while True:
+                try:
+                    msg = await asyncio.wait_for(job._ws_queue.get(), timeout=120.0)
+                    await websocket.send_json(msg)
+                    if msg.get("type") in ("done", "error"):
+                        break
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"type": "ping"})
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            try:
+                await websocket.send_json({"type": "error", "error": str(e)})
+            except Exception:
+                pass
+
     # ── Static files (frontend) ────────────────────────────────────────────
 
     static_dir = Path(__file__).parent / "static"
@@ -316,7 +516,8 @@ def create_app(pipeline) -> FastAPI:
     return app
 
 
-def run_server(pipeline, host: str = "0.0.0.0", port: int = 8000, **kwargs):
+def run_server(pipeline, faceswap_pipeline=None,
+               host: str = "0.0.0.0", port: int = 8000, **kwargs):
     """Start the uvicorn server. Call from Colab or local."""
-    app = create_app(pipeline)
+    app = create_app(pipeline, faceswap_pipeline=faceswap_pipeline)
     uvicorn.run(app, host=host, port=port, **kwargs)

@@ -396,7 +396,13 @@ class ConceptAttentionFluxPipeline:
         )
 
         if init_image is not None and image2image_strength > 0.0:
-            # img2img: encode init image and blend with noise
+            # image2image_strength: fraction of original to PRESERVE
+            #   1.0 = keep original exactly (no denoising)
+            #   0.0 = full regeneration (ignore original, pure text2img)
+            #   0.95 = add 5% noise, run 1 denoising step → mostly preserves original
+            noise_level = 1.0 - image2image_strength   # e.g. strength=0.95 → noise=0.05
+            t_start = float(noise_level)
+
             init_resized = init_image.resize((width, height), PIL.Image.LANCZOS).convert("RGB")
             img_np = np.array(init_resized).astype(np.float32) / 127.5 - 1.0  # [-1, 1]
             img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)
@@ -409,11 +415,17 @@ class ConceptAttentionFluxPipeline:
                 self.flux_generator.ae = self.flux_generator.ae.cpu()
                 torch.cuda.empty_cache()
 
-            # Truncate schedule based on strength
-            start_step = int(num_inference_steps * (1.0 - image2image_strength))
-            t_start = full_schedule[start_step]
-            active_schedule = full_schedule[start_step:]
+            # Blend noise + image latent at chosen noise level
             x = t_start * x + (1.0 - t_start) * encoded_init.to(torch.bfloat16)
+
+            # Build active schedule: [t_start, ...standard steps strictly below t_start..., 0.0]
+            # This keeps the model seeing its trained timestep values for all but the first step.
+            if t_start >= 1.0 - 1e-6:
+                active_schedule = full_schedule
+            else:
+                active_schedule = [t_start] + [t for t in full_schedule[1:] if t < t_start]
+                if not active_schedule or active_schedule[-1] > 1e-6:
+                    active_schedule.append(0.0)
         else:
             active_schedule = full_schedule
 
@@ -685,12 +697,10 @@ class ConceptAttentionFluxPipeline:
         """
         Compare concept heatmaps between an original image and an img2img-generated image.
 
-        Grid layout (x=concepts, y=original|generated):
-        ┌──────────────────┬──────────────────┐
-        │  Original Image  │  Generated Image  │  ← Row 0: complete images
-        ├──────────────────┼──────────────────┤
-        │ (1) concept HM   │ (1) concept HM    │  ← Row 1..N: heatmaps per concept
-        └──────────────────┴──────────────────┘
+        image2image_strength: fraction of original image to preserve.
+            1.0 = keep original exactly (no denoising)
+            0.0 = full regeneration from prompt (original ignored)
+            0.85 = add 15% noise, run 1–2 denoising steps → mostly preserves original
 
         on_step_callback(step_idx, total_steps, b64_heatmaps) is called each
         generation step — use this to stream heatmaps to a frontend in real time.

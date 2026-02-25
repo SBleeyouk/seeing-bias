@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Face-Swap Attention Explorer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d0d0f;
+    --surface: #16181e;
+    --surface2: #1e2028;
+    --border: #2a2d38;
+    --accent: #6c63ff;
+    --accent2: #ff6584;
+    --accent3: #27ae60;
+    --text: #e8eaf0;
+    --text-muted: #8b8fa8;
+    --radius: 10px;
+    --font: 'Inter', system-ui, sans-serif;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+
+  /* ── Layout ── */
+  .app { display: flex; flex-direction: column; min-height: 100vh; max-width: 1500px; margin: 0 auto; padding: 24px 20px; gap: 24px; }
+
+  /* ── Nav ── */
+  nav { display: flex; align-items: center; gap: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  nav a { color: var(--text-muted); text-decoration: none; font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 6px; transition: color .15s, background .15s; }
+  nav a:hover { color: var(--text); background: var(--surface2); }
+  nav a.active { color: var(--accent); background: rgba(108,99,255,.12); }
+
+  /* ── Header ── */
+  header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  header h1 span { color: var(--accent2); }
+  header p { margin-top: 4px; color: var(--text-muted); font-size: 0.85rem; }
+
+  /* ── Panel ── */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+
+  /* ── Upload pair ── */
+  .upload-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .upload-pair { grid-template-columns: 1fr; } }
+  .upload-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px;
+    text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
+    display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 160px;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: var(--accent); background: rgba(108,99,255,.06); }
+  .upload-zone.orig-zone:hover  { border-color: #e74c3c; background: rgba(231,76,60,.06); }
+  .upload-zone.tgt-zone:hover   { border-color: var(--accent2); background: rgba(255,101,132,.06); }
+  .upload-zone img { max-width: 160px; max-height: 130px; border-radius: 6px; object-fit: cover; display: none; }
+  .upload-zone .icon { font-size: 1.8rem; opacity: .5; }
+  .upload-zone .hint { color: var(--text-muted); font-size: 0.78rem; }
+  .upload-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+  .upload-label.orig { color: #e74c3c; }
+  .upload-label.tgt  { color: var(--accent2); }
+
+  /* ── Form ── */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+  .field input, .field textarea, .field select {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-family: var(--font); font-size: 13px; padding: 8px 10px; outline: none;
+    transition: border-color .15s;
+  }
+  .field input:focus, .field textarea:focus { border-color: var(--accent); }
+  .field textarea { resize: vertical; min-height: 60px; }
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  .slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .slider-val { font-size: 0.8rem; color: var(--text-muted); min-width: 32px; text-align: right; }
+
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 9px 20px;
+    border-radius: 7px; border: none; cursor: pointer; font-family: var(--font);
+    font-size: 0.87rem; font-weight: 600; transition: opacity .15s, transform .1s;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn-primary { background: var(--accent2); color: #fff; }
+  .btn-primary:hover { opacity: .88; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* ── Progress ── */
+  .progress-wrap { display: none; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .progress-wrap.visible { display: flex; }
+  .progress-bar-bg { background: var(--surface2); border-radius: 100px; height: 6px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 100px; transition: width .3s; }
+  .progress-label { font-size: 0.78rem; color: var(--text-muted); }
+
+  /* ── Viz ── */
+  .viz-section { display: none; flex-direction: column; gap: 18px; }
+  .viz-section.visible { display: flex; }
+
+  /* ── Grid ── */
+  .attention-grid { overflow-x: auto; }
+  .grid-table { border-collapse: collapse; width: 100%; }
+  .grid-table th, .grid-table td { padding: 6px; }
+  .grid-table thead th {
+    font-size: 0.78rem; font-weight: 600; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: .05em; text-align: center;
+  }
+  .row-label { font-size: 0.78rem; font-weight: 700; white-space: nowrap; padding-right: 10px; }
+  .row-label.orig   { color: #e74c3c; }
+  .row-label.target { color: var(--accent2); }
+  .row-label.swap   { color: var(--accent3); }
+
+  /* Cells */
+  .hm-cell   { width: 180px; height: 180px; }
+  .base-cell { width: 180px; height: 180px; }
+  .hm-cell canvas, .base-cell canvas {
+    border-radius: 6px; display: block; width: 180px; height: 180px;
+  }
+  .base-cell canvas { border: 1px solid var(--border); }
+  @media (max-width: 900px) {
+    .hm-cell, .base-cell { width: 120px; height: 120px; }
+    .hm-cell canvas, .base-cell canvas { width: 120px; height: 120px; }
+  }
+
+  /* Status / error */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 100px; font-size: .72rem; font-weight: 700; }
+  .badge-running { background: rgba(108,99,255,.2); color: var(--accent); }
+  .badge-done    { background: rgba(39,174,96,.2);  color: #27ae60; }
+  .badge-error   { background: rgba(231,76,60,.2);  color: #e74c3c; }
+  .error-box { background: rgba(231,76,60,.1); border: 1px solid rgba(231,76,60,.3); border-radius: 8px; padding: 14px 16px; font-size: .82rem; color: #e74c3c; white-space: pre-wrap; display: none; }
+  .error-box.visible { display: block; }
+  .divider { border: none; border-top: 1px solid var(--border); }
+
+  /* Legend */
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.78rem; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Nav -->
+  <nav>
+    <a href="/index.html">Concept Attention</a>
+    <a href="/faceswap.html" class="active">Face-Swap Attention</a>
+  </nav>
+
+  <!-- Header -->
+  <header>
+    <h1>Face-Swap <span>Attention</span> Explorer</h1>
+    <p>Upload two images · swap the face · compare concept attention maps across Original, Face Source, and Swapped</p>
+  </header>
+
+  <!-- Setup panel -->
+  <div class="panel" id="setupPanel">
+
+    <!-- Dual upload -->
+    <div class="upload-pair">
+      <div>
+        <div class="upload-label orig">Original Image <span style="font-weight:400;text-transform:none;">(face will be replaced)</span></div>
+        <div class="upload-zone orig-zone" id="uploadOrig">
+          <div class="icon">🖼</div>
+          <div>Drop or <strong>click to upload</strong></div>
+          <div class="hint">PNG · JPEG</div>
+          <img id="previewOrig" alt="original" />
+        </div>
+        <input type="file" id="fileOrig" accept=".png,.jpg,.jpeg" style="display:none" />
+      </div>
+      <div>
+        <div class="upload-label tgt">Face Source <span style="font-weight:400;text-transform:none;">(donor face)</span></div>
+        <div class="upload-zone tgt-zone" id="uploadTgt">
+          <div class="icon">👤</div>
+          <div>Drop or <strong>click to upload</strong></div>
+          <div class="hint">PNG · JPEG</div>
+          <img id="previewTgt" alt="target" />
+        </div>
+        <input type="file" id="fileTgt" accept=".png,.jpg,.jpeg" style="display:none" />
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="form-grid">
+      <div class="field">
+        <label>Text Prompt</label>
+        <textarea id="prompt" rows="2" placeholder="a person">a person</textarea>
+      </div>
+      <div class="field">
+        <label>Concept Tokens <span style="font-weight:400;text-transform:none;">(comma-separated)</span></label>
+        <input type="text" id="concepts" value="face, hair, skin, background" />
+      </div>
+      <div class="field">
+        <label>Image Size</label>
+        <select id="imgSize">
+          <option value="512" selected>512 × 512</option>
+          <option value="768">768 × 768</option>
+          <option value="1024">1024 × 1024</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Seed</label>
+        <input type="number" id="seed" value="0" min="0" />
+      </div>
+    </div>
+
+    <hr class="divider" style="margin: 20px 0;" />
+
+    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+      <button class="btn btn-primary" id="runBtn">▶ Swap &amp; Analyze</button>
+      <span id="statusBadge"></span>
+    </div>
+
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill" style="width:0%"></div></div>
+      <div class="progress-label" id="progressLabel">Waiting…</div>
+    </div>
+    <div class="error-box" id="errorBox"></div>
+  </div>
+
+  <!-- Visualization -->
+  <div class="viz-section" id="vizSection">
+
+    <!-- Legend -->
+    <div class="panel" style="padding: 14px 20px;">
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#e74c3c"></div><span style="color:#e74c3c;font-weight:700;">Original</span> — base image (face replaced)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--accent2)"></div><span style="color:var(--accent2);font-weight:700;">Face Source</span> — donor face</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--accent3)"></div><span style="color:var(--accent3);font-weight:700;">Swapped</span> — result of face swap</div>
+      </div>
+    </div>
+
+    <!-- Grid -->
+    <div class="panel attention-grid" id="gridPanel">
+      <!-- Built dynamically -->
+    </div>
+
+  </div>
+
+</div><!-- /app -->
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   State
+   ───────────────────────────────────────────────────────────────────────── */
+const state = {
+  origB64: null,
+  tgtB64: null,
+  concepts: [],
+  ws: null,
+  jobId: null,
+  // Images
+  origImgEl: null,
+  tgtImgEl: null,
+  swapImgEl: null,
+  // Heatmaps: [concept] → HTMLImageElement
+  origHeatmaps: [],
+  tgtHeatmaps: [],
+  swapHeatmaps: [],
+};
+
+const $ = id => document.getElementById(id);
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Upload handlers
+   ───────────────────────────────────────────────────────────────────────── */
+function setupUpload(zoneId, inputId, previewId, stateKey) {
+  const zone    = $(zoneId);
+  const input   = $(inputId);
+  const preview = $(previewId);
+
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0], preview, stateKey, zone);
+  });
+  input.addEventListener('change', () => {
+    if (input.files[0]) handleFile(input.files[0], preview, stateKey, zone);
+  });
+}
+
+function handleFile(file, preview, stateKey, zone) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    state[stateKey] = e.target.result.split(',')[1];
+    preview.src = e.target.result;
+    preview.style.display = 'block';
+    zone.querySelector('.icon').style.display = 'none';
+    zone.querySelectorAll('div').forEach(d => d.style.display = 'none');
+  };
+  reader.readAsDataURL(file);
+}
+
+setupUpload('uploadOrig', 'fileOrig', 'previewOrig', 'origB64');
+setupUpload('uploadTgt',  'fileTgt',  'previewTgt',  'tgtB64');
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Run
+   ───────────────────────────────────────────────────────────────────────── */
+$('runBtn').addEventListener('click', async () => {
+  if (!state.origB64) { alert('Please upload the Original image.'); return; }
+  if (!state.tgtB64)  { alert('Please upload the Face Source image.'); return; }
+  const concepts = $('concepts').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!concepts.length) { alert('Enter at least one concept.'); return; }
+
+  setError('');
+  resetViz();
+  state.concepts = concepts;
+  setProgress(0, 'Submitting job…');
+  setStatus('running');
+  $('runBtn').disabled = true;
+
+  const body = {
+    original_b64: state.origB64,
+    target_b64: state.tgtB64,
+    prompt: $('prompt').value.trim() || 'a person',
+    concepts,
+    width:  parseInt($('imgSize').value),
+    height: parseInt($('imgSize').value),
+    num_steps: 4,
+    noise_timestep: 2,
+    seed: parseInt($('seed').value),
+    cmap: 'plasma',
+  };
+
+  let jobId;
+  try {
+    const resp = await fetch('/api/faceswap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed to start job');
+    jobId = data.job_id;
+    state.jobId = jobId;
+  } catch (e) {
+    setError('Failed to start job: ' + e.message);
+    $('runBtn').disabled = false;
+    setStatus('error');
+    return;
+  }
+
+  openWS(jobId, body.width, body.height);
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   WebSocket
+   ───────────────────────────────────────────────────────────────────────── */
+const STAGE_LABELS = {
+  'Swapping face…':                          'Step 1/4 — Swapping face…',
+  'Computing attention maps for Original…':  'Step 2/4 — Analyzing original…',
+  'Computing attention maps for Face Source…': 'Step 3/4 — Analyzing face source…',
+  'Computing attention maps for Swapped…':   'Step 4/4 — Analyzing swapped result…',
+};
+
+function openWS(jobId, w, h) {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/faceswap/${jobId}`);
+  if (state.ws) state.ws.close();
+  state.ws = ws;
+
+  ws.addEventListener('message', evt => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch { return; }
+    if (msg.type === 'ping') return;
+
+    if (msg.type === 'progress') {
+      const label = STAGE_LABELS[msg.stage] || msg.stage;
+      setProgress(msg.progress, label);
+    }
+
+    if (msg.type === 'done') {
+      setStatus('done');
+      setProgress(100, 'Done!');
+      $('runBtn').disabled = false;
+
+      // Load images
+      state.origImgEl = loadImg(msg.original_image);
+      state.tgtImgEl  = loadImg(msg.target_image);
+      state.swapImgEl = loadImg(msg.swapped_image);
+      state.origHeatmaps = msg.original_heatmaps.map(b64 => loadImg(b64));
+      state.tgtHeatmaps  = msg.target_heatmaps.map(b64  => loadImg(b64));
+      state.swapHeatmaps = msg.swapped_heatmaps.map(b64 => loadImg(b64));
+
+      buildGrid(msg.concepts, w, h);
+
+      // Wait for all images then render
+      const allImgs = [
+        state.origImgEl, state.tgtImgEl, state.swapImgEl,
+        ...state.origHeatmaps, ...state.tgtHeatmaps, ...state.swapHeatmaps,
+      ];
+      Promise.all(allImgs.map(waitLoad)).then(renderGrid);
+
+      ws.close();
+    }
+
+    if (msg.type === 'error') {
+      setError('Pipeline error:\n' + msg.error);
+      setStatus('error');
+      $('runBtn').disabled = false;
+      ws.close();
+    }
+  });
+
+  ws.addEventListener('error', () => {
+    setError('WebSocket connection failed. Check server is running.');
+    $('runBtn').disabled = false;
+    setStatus('error');
+  });
+}
+
+function loadImg(b64) {
+  const img = new Image();
+  img.src = 'data:image/png;base64,' + b64;
+  return img;
+}
+
+function waitLoad(imgEl) {
+  return new Promise(res => {
+    if (imgEl.complete) res();
+    else imgEl.onload = res;
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Grid builder
+   ───────────────────────────────────────────────────────────────────────── */
+function buildGrid(concepts, w, h) {
+  $('vizSection').classList.add('visible');
+  const N = concepts.length;
+
+  let html = '<table class="grid-table"><thead><tr>';
+  html += '<th></th>';
+  html += '<th style="color:var(--text)">Image</th>';
+  concepts.forEach(c => { html += `<th>${c}</th>`; });
+  html += '</tr></thead><tbody>';
+
+  const rows = [
+    { key: 'orig',   label: 'Original',    cls: 'orig'   },
+    { key: 'tgt',    label: 'Face Source', cls: 'target' },
+    { key: 'swap',   label: 'Swapped',     cls: 'swap'   },
+  ];
+
+  rows.forEach(row => {
+    html += `<tr><td class="row-label ${row.cls}">${row.label}</td>`;
+    html += `<td><div class="base-cell"><canvas id="cv-${row.key}-base" width="${w}" height="${h}"></canvas></div></td>`;
+    for (let ci = 0; ci < N; ci++) {
+      html += `<td><div class="hm-cell"><canvas id="cv-${row.key}-${ci}" width="${w}" height="${h}"></canvas></div></td>`;
+    }
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  $('gridPanel').innerHTML = html;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Rendering
+   ───────────────────────────────────────────────────────────────────────── */
+function renderGrid() {
+  const N = state.concepts.length;
+
+  // Base image cells
+  drawBase('cv-orig-base', state.origImgEl);
+  drawBase('cv-tgt-base',  state.tgtImgEl);
+  drawBase('cv-swap-base', state.swapImgEl);
+
+  // Heatmap cells
+  for (let ci = 0; ci < N; ci++) {
+    drawOverlay(`cv-orig-${ci}`, state.origImgEl, state.origHeatmaps[ci]);
+    drawOverlay(`cv-tgt-${ci}`,  state.tgtImgEl,  state.tgtHeatmaps[ci]);
+    drawOverlay(`cv-swap-${ci}`, state.swapImgEl, state.swapHeatmaps[ci]);
+  }
+}
+
+function drawBase(canvasId, imgEl) {
+  const canvas = $(canvasId);
+  if (!canvas || !imgEl) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (imgEl.complete && imgEl.naturalWidth > 0) {
+    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+  } else {
+    ctx.fillStyle = '#1e2028';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    imgEl.onload = () => drawBase(canvasId, imgEl);
+  }
+}
+
+function drawOverlay(canvasId, baseImg, hmImg) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (baseImg && baseImg.complete && baseImg.naturalWidth > 0) {
+    ctx.drawImage(baseImg, 0, 0, W, H);
+  } else {
+    ctx.fillStyle = '#1e2028';
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (hmImg && hmImg.complete && hmImg.naturalWidth > 0) {
+    ctx.globalAlpha = 0.58;
+    ctx.drawImage(hmImg, 0, 0, W, H);
+    ctx.globalAlpha = 1.0;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   UI helpers
+   ───────────────────────────────────────────────────────────────────────── */
+function setProgress(pct, label) {
+  $('progressWrap').classList.add('visible');
+  $('progressFill').style.width = pct + '%';
+  $('progressLabel').textContent = label;
+}
+
+function setStatus(s) {
+  const labels  = { running: '⬤ Running', done: '✓ Done', error: '✗ Error' };
+  const classes = { running: 'badge-running', done: 'badge-done', error: 'badge-error' };
+  const el = $('statusBadge');
+  el.className = `badge ${classes[s] || ''}`;
+  el.textContent = labels[s] || s;
+}
+
+function setError(msg) {
+  const el = $('errorBox');
+  if (msg) { el.textContent = msg; el.classList.add('visible'); }
+  else      { el.textContent = ''; el.classList.remove('visible'); }
+}
+
+function resetViz() {
+  $('vizSection').classList.remove('visible');
+  $('gridPanel').innerHTML = '';
+  Object.assign(state, {
+    origImgEl: null, tgtImgEl: null, swapImgEl: null,
+    origHeatmaps: [], tgtHeatmaps: [], swapHeatmaps: [],
+  });
+}
+</script>
+</body>
+</html>
