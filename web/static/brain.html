@@ -18,39 +18,23 @@
     --text-muted: #8b8fa8;
     --radius: 10px;
     --font: 'Inter', system-ui, sans-serif;
-    --panel-w: 380px;
+    --panel-w: 390px;
   }
   html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; overflow: hidden; }
 
-  /* ── Layout ── */
   .app { display: flex; flex-direction: column; height: 100vh; }
 
   /* ── Nav ── */
-  nav { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  nav { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; z-index: 10; position: relative; }
   nav a { color: var(--text-muted); text-decoration: none; font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 6px; transition: color .15s, background .15s; }
   nav a:hover { color: var(--text); background: var(--surface2); }
   nav a.active { color: var(--accent); background: rgba(108,99,255,.12); }
   .nav-title { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-right: auto; letter-spacing: -0.01em; }
   .nav-count { font-size: 0.75rem; color: var(--text-muted); }
 
-  /* ── Main area ── */
+  /* ── 3D graph container ── */
   .main { flex: 1; position: relative; overflow: hidden; }
-
-  /* ── SVG graph ── */
-  #graphSvg { width: 100%; height: 100%; display: block; }
-  #graphSvg .link { stroke: var(--border); stroke-opacity: 0.5; fill: none; }
-  #graphSvg .node-label {
-    font-family: var(--font); font-size: 11px; font-weight: 700;
-    fill: var(--text); text-anchor: middle; dominant-baseline: middle;
-    pointer-events: none; letter-spacing: .04em; text-transform: uppercase;
-  }
-  #graphSvg .node-ring {
-    fill: none; stroke: var(--border); stroke-width: 1;
-    rx: 100;
-  }
-  #graphSvg .node-bg {
-    fill: var(--surface); stroke: var(--border); stroke-width: 1;
-  }
+  #graph3d { width: 100%; height: 100%; display: block; }
 
   /* ── Empty state ── */
   .empty-state {
@@ -60,30 +44,26 @@
   .empty-state.hidden { display: none; }
   .empty-icon { font-size: 3rem; opacity: .3; }
   .empty-title { font-size: 1.1rem; font-weight: 700; color: var(--text-muted); }
-  .empty-sub { font-size: 0.82rem; color: var(--text-muted); opacity: .7; text-align: center; max-width: 320px; }
-  .empty-sub a { color: var(--accent); text-decoration: none; }
+  .empty-sub { font-size: 0.82rem; color: var(--text-muted); opacity: .7; text-align: center; max-width: 320px; line-height: 1.6; }
+  .empty-sub a { color: var(--accent); text-decoration: none; pointer-events: all; }
   .empty-sub a:hover { text-decoration: underline; }
 
-  /* ── Detail panel (right slide-in) ── */
+  /* ── Detail panel ── */
   .detail-panel {
     position: fixed; top: 0; right: 0; width: var(--panel-w); height: 100vh;
     background: var(--surface); border-left: 1px solid var(--border);
     display: flex; flex-direction: column; overflow: hidden;
     transform: translateX(100%); transition: transform .25s cubic-bezier(.4,0,.2,1);
-    z-index: 100;
+    z-index: 200;
   }
   .detail-panel.open { transform: translateX(0); }
-
-  .panel-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
-  }
+  .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .panel-header h2 { font-size: 0.92rem; font-weight: 700; }
-  .panel-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem; padding: 4px; border-radius: 4px; }
+  .panel-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem; padding: 4px 8px; border-radius: 4px; }
   .panel-close:hover { color: var(--text); background: var(--surface2); }
-
   .panel-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 
+  /* ── Panel content ── */
   .meta-tags { display: flex; gap: 6px; flex-wrap: wrap; }
   .tag { display: inline-block; padding: 2px 9px; border-radius: 100px; font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   .tag-general  { background: rgba(108,99,255,.2); color: var(--accent); }
@@ -94,23 +74,32 @@
   .meta-prompt { font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; font-style: italic; }
   .meta-concepts { display: flex; gap: 5px; flex-wrap: wrap; }
   .concept-chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 2px 8px; font-size: .75rem; color: var(--text-muted); }
+  .panel-section-title { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 6px; }
 
   .img-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .img-pair.trio { grid-template-columns: 1fr 1fr 1fr; }
   .img-entry { display: flex; flex-direction: column; gap: 4px; }
   .img-entry label { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
-  .img-entry img { width: 100%; border-radius: 6px; border: 1px solid var(--border); display: block; }
+  .overlay-canvas { width: 100%; border-radius: 6px; border: 1px solid var(--border); display: block; }
 
-  .panel-section-title { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 4px; }
+  .entry-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .entry-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+  .entry-count { font-size: .75rem; color: var(--text-muted); }
 
-  /* thumbnail canvas inside SVG (foreignObject) */
-  .thumb-canvas { border-radius: 50%; overflow: hidden; cursor: pointer; }
+  /* ── Loading indicator ── */
+  .loading-overlay {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(13,13,15,.7); z-index: 50; flex-direction: column; gap: 12px;
+  }
+  .loading-overlay.hidden { display: none; }
+  .loading-text { font-size: .85rem; color: var(--text-muted); }
+  .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 <div class="app">
 
-  <!-- Nav -->
   <nav>
     <span class="nav-title">🧠 Brain of AI</span>
     <a href="/index.html">Concept Attention</a>
@@ -119,12 +108,15 @@
     <span class="nav-count" id="navCount"></span>
   </nav>
 
-  <!-- Main graph area -->
   <div class="main" id="mainArea">
-    <svg id="graphSvg"></svg>
+    <div id="graph3d"></div>
 
-    <!-- Empty state -->
-    <div class="empty-state" id="emptyState">
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loadingText">Building brain…</div>
+    </div>
+
+    <div class="empty-state hidden" id="emptyState">
       <div class="empty-icon">🧠</div>
       <div class="empty-title">No submissions yet</div>
       <div class="empty-sub">
@@ -135,7 +127,6 @@
     </div>
   </div>
 
-  <!-- Detail panel -->
   <div class="detail-panel" id="detailPanel">
     <div class="panel-header">
       <h2 id="panelTitle">Result</h2>
@@ -146,32 +137,56 @@
 
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<!-- Three.js must load before 3d-force-graph so it uses the global THREE -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1/dist/3d-force-graph.min.js"></script>
 <script>
 /* ─────────────────────────────────────────────────────────────────────────
-   Constants / globals
+   Config
    ───────────────────────────────────────────────────────────────────────── */
-const THUMB_R      = 29;   // thumbnail circle radius px
-const RING_R       = 95;   // ring radius from node centre
-const NODE_TEXT_Y  = 0;    // label y-offset from node centre
-const NODE_PAD     = 24;   // extra padding around thumbnails for node-bg circle
+const THUMB_PX   = 58;    // masked thumbnail size (pixels, for preprocessing)
+const RING_R     = 40;    // ring radius from node centre (3D world units)
+const SPRITE_SZ  = 22;    // thumbnail sprite size (3D world units)
+const LABEL_W    = 50;    // label sprite width
+const LABEL_H    = 11;    // label sprite height
 
 const $ = id => document.getElementById(id);
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Heatmap masking helper  (runs in an OffscreenCanvas)
-   Converts a plasma-colourmap heatmap + base image into a masked thumbnail:
-   - pixels where plasma luminance ≥ adaptive threshold are shown clearly
-   - remaining pixels are blended toward black proportionally
+   Global state
+   ───────────────────────────────────────────────────────────────────────── */
+let graph3d       = null;
+let allThumbSprites = [];        // all thumbnail sprites (for raycasting)
+let nodeThumbData   = {};        // conceptId → [{dataUrl, entry, imageType, conceptId}]
+let conceptImagesData = {};      // conceptId → [entry...]
+let _spriteClicked  = false;     // debounce flag
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Heatmap masking
+   Builds a masked thumbnail where only the top-30%-luminance pixels of
+   the heatmap are clearly visible; rest fades to black.
    ───────────────────────────────────────────────────────────────────────── */
 function buildMaskedThumb(baseB64, hmB64, size) {
   return new Promise(resolve => {
-    const baseImg = new Image();
-    const hmImg   = new Image();
+    if (!baseB64) { resolve(null); return; }
+
+    // No heatmap → just resize the base image
+    if (!hmB64) {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = c.height = size;
+        c.getContext('2d').drawImage(img, 0, 0, size, size);
+        resolve(c.toDataURL('image/png'));
+      };
+      img.src = 'data:image/png;base64,' + baseB64;
+      return;
+    }
+
+    const baseImg = new Image(), hmImg = new Image();
     let loaded = 0;
     const onLoad = () => { if (++loaded === 2) draw(); };
-    baseImg.onload = onLoad;
-    hmImg.onload   = onLoad;
+    baseImg.onload = onLoad; hmImg.onload = onLoad;
     baseImg.src = 'data:image/png;base64,' + baseB64;
     hmImg.src   = 'data:image/png;base64,' + hmB64;
 
@@ -180,41 +195,28 @@ function buildMaskedThumb(baseB64, hmB64, size) {
       canvas.width = canvas.height = size;
       const ctx = canvas.getContext('2d');
 
-      // Draw base image
       ctx.drawImage(baseImg, 0, 0, size, size);
       const baseData = ctx.getImageData(0, 0, size, size);
-
-      // Draw heatmap
       ctx.drawImage(hmImg, 0, 0, size, size);
       const hmData = ctx.getImageData(0, 0, size, size);
 
-      // Compute luminance per pixel from plasma heatmap
-      const lum = new Float32Array(size * size);
-      for (let i = 0; i < size * size; i++) {
-        const r = hmData.data[i*4]   / 255;
-        const g = hmData.data[i*4+1] / 255;
-        const b = hmData.data[i*4+2] / 255;
-        lum[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const n = size * size;
+      const lum = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        lum[i] = 0.2126 * hmData.data[i*4]/255
+                + 0.7152 * hmData.data[i*4+1]/255
+                + 0.0722 * hmData.data[i*4+2]/255;
       }
 
-      // Adaptive threshold: top 30% of pixels
       const sorted = Float32Array.from(lum).sort();
-      const thresh = sorted[Math.floor(sorted.length * 0.70)] || 0.01;
+      const thresh = sorted[Math.floor(n * 0.70)] || 0.01;
 
-      // Build output: mix base image with black mask
       const out = ctx.createImageData(size, size);
-      for (let i = 0; i < size * size; i++) {
-        const l = lum[i];
-        let factor;
-        if (l >= thresh) {
-          factor = 1.0;
-        } else {
-          // Smooth darkening — low-attention areas approach black
-          factor = Math.pow(l / thresh, 2) * 0.12;
-        }
-        out.data[i*4]   = Math.round(baseData.data[i*4]   * factor);
-        out.data[i*4+1] = Math.round(baseData.data[i*4+1] * factor);
-        out.data[i*4+2] = Math.round(baseData.data[i*4+2] * factor);
+      for (let i = 0; i < n; i++) {
+        const f = lum[i] >= thresh ? 1.0 : Math.pow(lum[i] / thresh, 2) * 0.12;
+        out.data[i*4]   = Math.round(baseData.data[i*4]   * f);
+        out.data[i*4+1] = Math.round(baseData.data[i*4+1] * f);
+        out.data[i*4+2] = Math.round(baseData.data[i*4+2] * f);
         out.data[i*4+3] = 255;
       }
       ctx.putImageData(out, 0, 0);
@@ -224,47 +226,136 @@ function buildMaskedThumb(baseB64, hmB64, size) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Detail panel
+   THREE.js sprite helpers
    ───────────────────────────────────────────────────────────────────────── */
-$('panelClose').addEventListener('click', () => {
-  $('detailPanel').classList.remove('open');
-});
+function makeTextSprite(text) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 56;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, 256, 56);
+  ctx.font = 'bold 22px Inter,system-ui,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
 
-function openDetail(entry, conceptLabel, imageType) {
-  const panel = $('detailPanel');
-  const body  = $('panelBody');
-  $('panelTitle').textContent = `"${conceptLabel}" — ${imageType}`;
+  // Subtle glow
+  ctx.shadowColor = 'rgba(108,99,255,0.8)';
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#e8eaf0';
+  ctx.fillText(text.toUpperCase(), 128, 28);
 
+  const tex = new THREE.CanvasTexture(c);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  sprite.scale.set(LABEL_W, LABEL_H, 1);
+  return sprite;
+}
+
+function makeThumbnailSprite(dataUrl, userData) {
+  const mat = new THREE.SpriteMaterial({ transparent: true, depthWrite: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(SPRITE_SZ, SPRITE_SZ, 1);
+  sprite.userData = userData;
+
+  const img = new Image();
+  img.onload = () => {
+    // Circular crop canvas
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d');
+    ctx.beginPath();
+    ctx.arc(32, 32, 32, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(img, 0, 0, 64, 64);
+
+    // Thin border ring
+    ctx.beginPath();
+    ctx.arc(32, 32, 31, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(108,99,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const tex = new THREE.CanvasTexture(c);
+    sprite.material.map = tex;
+    sprite.material.needsUpdate = true;
+  };
+  img.src = dataUrl;
+  return sprite;
+}
+
+function buildNodeObject(node) {
+  const group = new THREE.Group();
+  group.add(makeTextSprite(node.id));
+
+  const thumbs = nodeThumbData[node.id] || [];
+  const N = thumbs.length;
+  thumbs.forEach((thumb, i) => {
+    const angle = (2 * Math.PI * i / N) - Math.PI / 2;
+    const sprite = makeThumbnailSprite(thumb.dataUrl, thumb);
+    sprite.position.set(
+      Math.cos(angle) * RING_R,
+      Math.sin(angle) * RING_R,
+      0
+    );
+    group.add(sprite);
+    allThumbSprites.push(sprite);
+  });
+
+  return group;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Canvas-based heatmap overlay for detail panel
+   ───────────────────────────────────────────────────────────────────────── */
+function drawHeatmapOverlay(canvasEl, baseB64, hmB64) {
+  if (!canvasEl || !baseB64) return;
+  const W = canvasEl.width, H = canvasEl.height;
+  const ctx = canvasEl.getContext('2d');
+
+  const base = new Image();
+  base.onload = () => {
+    ctx.drawImage(base, 0, 0, W, H);
+    if (!hmB64) return;
+    const hm = new Image();
+    hm.onload = () => {
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(hm, 0, 0, W, H);
+      ctx.globalAlpha = 1;
+    };
+    hm.src = 'data:image/png;base64,' + hmB64;
+  };
+  base.src = 'data:image/png;base64,' + baseB64;
+}
+
+function drawPlainImage(canvasEl, b64) {
+  if (!canvasEl || !b64) return;
+  const img = new Image();
+  img.onload = () => canvasEl.getContext('2d').drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
+  img.src = 'data:image/png;base64,' + b64;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Detail panel — specific thumbnail click
+   ───────────────────────────────────────────────────────────────────────── */
+$('panelClose').addEventListener('click', () => $('detailPanel').classList.remove('open'));
+
+function openDetail(thumb) {
+  const { entry, conceptId, imageType } = thumb;
   const isFaceswap = entry.type === 'faceswap';
 
-  // Tags
-  const typeTag    = `<span class="tag tag-${isFaceswap ? 'faceswap' : 'general'}">${isFaceswap ? 'Face-Swap' : 'General'}</span>`;
-  const imgTypeTag = `<span class="tag tag-${imageType === 'generated' ? 'swapped' : 'encode'}">${imageType === 'generated' ? (isFaceswap ? 'Swapped' : 'Generated') : 'Original'}</span>`;
+  $('panelTitle').textContent = `"${conceptId}"`;
 
-  // Concepts chips
-  const chips = entry.concepts.map(c =>
-    `<span class="concept-chip">${c}</span>`
-  ).join('');
+  const typeTag = `<span class="tag tag-${isFaceswap ? 'faceswap' : 'general'}">${isFaceswap ? 'Face-Swap' : 'General'}</span>`;
+  const itLabel = imageType === 'generated' ? (isFaceswap ? 'Swapped' : 'Generated') : 'Original';
+  const imgTag  = `<span class="tag tag-${imageType === 'generated' ? 'swapped' : 'encode'}">${itLabel}</span>`;
+  const chips   = entry.concepts.map(c => `<span class="concept-chip">${c}</span>`).join('');
 
-  // Images
-  let imagesHTML = '';
+  let imagesHTML;
   if (isFaceswap) {
     imagesHTML = `
       <div>
         <div class="panel-section-title">Images</div>
         <div class="img-pair trio">
-          <div class="img-entry">
-            <label>Original</label>
-            <img src="data:image/png;base64,${entry.original_image}" />
-          </div>
-          <div class="img-entry">
-            <label>Face Source</label>
-            <img src="data:image/png;base64,${entry.target_image}" />
-          </div>
-          <div class="img-entry">
-            <label>Swapped</label>
-            <img src="data:image/png;base64,${entry.generated_image}" />
-          </div>
+          <div class="img-entry"><label>Original</label><canvas class="overlay-canvas" id="dp-orig" width="180" height="180"></canvas></div>
+          <div class="img-entry"><label>Face Source</label><canvas class="overlay-canvas" id="dp-tgt" width="180" height="180"></canvas></div>
+          <div class="img-entry"><label>Swapped</label><canvas class="overlay-canvas" id="dp-swap" width="180" height="180"></canvas></div>
         </div>
       </div>`;
   } else {
@@ -272,217 +363,208 @@ function openDetail(entry, conceptLabel, imageType) {
       <div>
         <div class="panel-section-title">Images</div>
         <div class="img-pair">
-          <div class="img-entry">
-            <label>Original</label>
-            <img src="data:image/png;base64,${entry.original_image}" />
-          </div>
-          <div class="img-entry">
-            <label>Generated</label>
-            <img src="data:image/png;base64,${entry.generated_image}" />
-          </div>
+          <div class="img-entry"><label>Original</label><canvas class="overlay-canvas" id="dp-orig" width="180" height="180"></canvas></div>
+          <div class="img-entry"><label>Generated</label><canvas class="overlay-canvas" id="dp-gen" width="180" height="180"></canvas></div>
         </div>
       </div>`;
   }
 
-  body.innerHTML = `
-    <div class="meta-tags">${typeTag}${imgTypeTag}</div>
+  $('panelBody').innerHTML = `
+    <div class="meta-tags">${typeTag}${imgTag}</div>
     <div class="meta-prompt">"${entry.prompt}"</div>
-    <div>
-      <div class="panel-section-title">Concept tokens</div>
-      <div class="meta-concepts">${chips}</div>
-    </div>
+    <div><div class="panel-section-title">Concept tokens</div><div class="meta-concepts">${chips}</div></div>
     ${imagesHTML}
   `;
 
-  panel.classList.add('open');
+  if (isFaceswap) {
+    drawHeatmapOverlay($('dp-orig'), entry.original_image, entry.original_heatmap);
+    drawPlainImage($('dp-tgt'), entry.target_image);
+    drawHeatmapOverlay($('dp-swap'), entry.generated_image, entry.generated_heatmap);
+  } else {
+    drawHeatmapOverlay($('dp-orig'), entry.original_image, entry.original_heatmap);
+    drawHeatmapOverlay($('dp-gen'), entry.generated_image, entry.generated_heatmap);
+  }
+
+  $('detailPanel').classList.add('open');
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   D3 force graph
+   Detail panel — node click (all images for a concept)
    ───────────────────────────────────────────────────────────────────────── */
-let simulation = null;
+function openConceptDetail(conceptId) {
+  const entries = conceptImagesData[conceptId] || [];
+  $('panelTitle').textContent = `Concept: "${conceptId}"`;
 
-async function renderGraph(data) {
+  if (!entries.length) {
+    $('panelBody').innerHTML = '<p style="color:var(--text-muted);font-size:.82rem;">No images.</p>';
+    $('detailPanel').classList.add('open');
+    return;
+  }
+
+  let html = `<div class="entry-count">${entries.length} image${entries.length !== 1 ? 's' : ''}</div>`;
+
+  entries.forEach((entry, idx) => {
+    const isFaceswap = entry.type === 'faceswap';
+    const chips = entry.concepts.map(c => `<span class="concept-chip">${c}</span>`).join('');
+    const typeTag = `<span class="tag tag-${isFaceswap ? 'faceswap' : 'general'}">${isFaceswap ? 'Face-Swap' : 'General'}</span>`;
+
+    if (isFaceswap) {
+      html += `
+        <div class="entry-card">
+          <div class="meta-tags">${typeTag}</div>
+          <div class="meta-prompt">"${entry.prompt}"</div>
+          <div class="meta-concepts">${chips}</div>
+          <div class="img-pair trio">
+            <div class="img-entry"><label>Original</label><canvas class="overlay-canvas" id="ec-orig-${idx}" width="180" height="180"></canvas></div>
+            <div class="img-entry"><label>Face Source</label><canvas class="overlay-canvas" id="ec-tgt-${idx}" width="180" height="180"></canvas></div>
+            <div class="img-entry"><label>Swapped</label><canvas class="overlay-canvas" id="ec-swap-${idx}" width="180" height="180"></canvas></div>
+          </div>
+        </div>`;
+    } else {
+      html += `
+        <div class="entry-card">
+          <div class="meta-tags">${typeTag}</div>
+          <div class="meta-prompt">"${entry.prompt}"</div>
+          <div class="meta-concepts">${chips}</div>
+          <div class="img-pair">
+            <div class="img-entry"><label>Original</label><canvas class="overlay-canvas" id="ec-orig-${idx}" width="180" height="180"></canvas></div>
+            <div class="img-entry"><label>Generated</label><canvas class="overlay-canvas" id="ec-gen-${idx}" width="180" height="180"></canvas></div>
+          </div>
+        </div>`;
+    }
+  });
+
+  $('panelBody').innerHTML = html;
+
+  entries.forEach((entry, idx) => {
+    const isFaceswap = entry.type === 'faceswap';
+    drawHeatmapOverlay($(`ec-orig-${idx}`), entry.original_image, entry.original_heatmap);
+    if (isFaceswap) {
+      drawPlainImage($(`ec-tgt-${idx}`), entry.target_image);
+      drawHeatmapOverlay($(`ec-swap-${idx}`), entry.generated_image, entry.generated_heatmap);
+    } else {
+      drawHeatmapOverlay($(`ec-gen-${idx}`), entry.generated_image, entry.generated_heatmap);
+    }
+  });
+
+  $('detailPanel').classList.add('open');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Per-sprite raycasting (capture phase — fires before 3d-force-graph)
+   ───────────────────────────────────────────────────────────────────────── */
+function setupSpritePicker() {
+  const raycaster = new THREE.Raycaster();
+
+  $('mainArea').addEventListener('click', evt => {
+    if (!allThumbSprites.length || !graph3d) return;
+    const rect = $('mainArea').getBoundingClientRect();
+    raycaster.setFromCamera(
+      new THREE.Vector2(
+        ((evt.clientX - rect.left) / rect.width)  *  2 - 1,
+        ((evt.clientY - rect.top)  / rect.height) * -2 + 1
+      ),
+      graph3d.camera()
+    );
+    const hits = raycaster.intersectObjects(allThumbSprites, false);
+    if (hits.length > 0) {
+      _spriteClicked = true;
+      setTimeout(() => { _spriteClicked = false; }, 150);
+      openDetail(hits[0].object.userData);
+    }
+  }, true); // capture → runs before 3d-force-graph's bubble handler
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Dispose previous graph resources
+   ───────────────────────────────────────────────────────────────────────── */
+function disposeGraph() {
+  allThumbSprites.forEach(s => {
+    if (s.material.map) s.material.map.dispose();
+    s.material.dispose();
+  });
+  allThumbSprites = [];
+  if (graph3d) {
+    try { graph3d._destructor && graph3d._destructor(); } catch {}
+    $('graph3d').innerHTML = '';
+    graph3d = null;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Main 3D render
+   ───────────────────────────────────────────────────────────────────────── */
+async function renderGraph3D(data) {
   const { nodes, links, concept_images, total_submissions } = data;
 
   $('navCount').textContent = `${total_submissions} submission${total_submissions !== 1 ? 's' : ''}`;
 
   if (!nodes.length) {
+    $('loadingOverlay').classList.add('hidden');
     $('emptyState').classList.remove('hidden');
     return;
   }
   $('emptyState').classList.add('hidden');
 
-  const svg    = d3.select('#graphSvg');
-  const W      = $('mainArea').clientWidth;
-  const H      = $('mainArea').clientHeight;
+  conceptImagesData = concept_images;
+  disposeGraph();
+  nodeThumbData = {};
 
-  svg.selectAll('*').remove();
-  if (simulation) simulation.stop();
-
-  // Defs — clipPath for circular thumbnails
-  const defs = svg.append('defs');
-
-  // Link scale
-  const maxLinkVal = d3.max(links, d => d.value) || 1;
-  const linkWidth  = d3.scaleLinear().domain([0, maxLinkVal]).range([0.5, 4]);
-
-  // Pre-compute masked thumbnails for all concept images
-  // concept_images: { concept: [{ original_image, generated_image, original_heatmap, generated_heatmap, ... }] }
-  const thumbSize = THUMB_R * 2;
-
-  // Build thumbnail data per node
-  const nodeThumbData = {}; // concept → [ { dataUrl, entry, imageType } ]
+  // Pre-compute masked thumbnails (async, in parallel per node)
+  $('loadingText').textContent = 'Masking attention regions…';
   await Promise.all(nodes.map(async node => {
     const entries = concept_images[node.id] || [];
-    const thumbs  = [];
+    const thumbs = [];
     for (const entry of entries) {
-      // Original masked
-      const origThumb = await buildMaskedThumb(entry.original_image, entry.original_heatmap, thumbSize);
-      thumbs.push({ dataUrl: origThumb, entry, imageType: 'original' });
-      // Generated masked
-      const genThumb = await buildMaskedThumb(entry.generated_image, entry.generated_heatmap, thumbSize);
-      thumbs.push({ dataUrl: genThumb, entry, imageType: 'generated' });
+      const origThumb = await buildMaskedThumb(entry.original_image, entry.original_heatmap, THUMB_PX);
+      if (origThumb) thumbs.push({ dataUrl: origThumb, entry, imageType: 'original', conceptId: node.id });
+      const genThumb  = await buildMaskedThumb(entry.generated_image, entry.generated_heatmap, THUMB_PX);
+      if (genThumb)  thumbs.push({ dataUrl: genThumb,  entry, imageType: 'generated', conceptId: node.id });
     }
     nodeThumbData[node.id] = thumbs;
   }));
 
-  // Create clip paths for each thumb
-  let clipIdx = 0;
-  const clipIds = {};
-  nodes.forEach(node => {
-    const thumbs = nodeThumbData[node.id] || [];
-    clipIds[node.id] = [];
-    thumbs.forEach(() => {
-      const cid = `clip-${clipIdx++}`;
-      defs.append('clipPath').attr('id', cid)
-        .append('circle').attr('r', THUMB_R).attr('cx', 0).attr('cy', 0);
-      clipIds[node.id].push(cid);
-    });
-  });
+  $('loadingText').textContent = 'Building 3D graph…';
 
-  // Container group for zoom/pan
-  const g = svg.append('g').attr('class', 'graph-root');
+  const maxLinkVal = Math.max(...links.map(l => l.value), 1);
 
-  // Zoom behaviour
-  svg.call(d3.zoom()
-    .scaleExtent([0.2, 4])
-    .on('zoom', evt => g.attr('transform', evt.transform))
-  );
+  graph3d = ForceGraph3D()
+    ($('graph3d'))
+    .backgroundColor('#0d0d0f')
+    .showNavInfo(false)
+    .linkColor(() => 'rgba(42,45,56,0.9)')
+    .linkWidth(l => 0.4 + (l.value / maxLinkVal) * 2.2)
+    .linkOpacity(0.7)
+    .nodeLabel(() => '')          // disable default tooltip
+    .nodeThreeObject(node => buildNodeObject(node))
+    .nodeThreeObjectExtend(false) // replace default sphere entirely
+    .onNodeClick((node) => {
+      if (_spriteClicked) return; // thumbnail was clicked — detail already opened
+      openConceptDetail(node.id);
+    })
+    .graphData({ nodes, links });
 
-  // Links
-  const linkSel = g.append('g').attr('class', 'links')
-    .selectAll('line').data(links).join('line')
-    .attr('class', 'link')
-    .attr('stroke-width', d => linkWidth(d.value));
+  // Tune forces after graph is created
+  graph3d.d3Force('charge').strength(-700);
+  graph3d.d3Force('link').distance(220).strength(0.06);
 
-  // Node groups
-  const nodeRadius = node => {
-    const thumbCount = (nodeThumbData[node.id] || []).length;
-    return thumbCount > 0 ? RING_R + THUMB_R + NODE_PAD : 50;
-  };
+  // Sprite raycaster (must be set up after graph3d is created)
+  setupSpritePicker();
 
-  const nodeSel = g.append('g').attr('class', 'nodes')
-    .selectAll('g').data(nodes).join('g')
-    .attr('class', 'node-group')
-    .call(d3.drag()
-      .on('start', (evt, d) => {
-        if (!evt.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x; d.fy = d.y;
-      })
-      .on('drag', (evt, d) => { d.fx = evt.x; d.fy = evt.y; })
-      .on('end', (evt, d) => {
-        if (!evt.active) simulation.alphaTarget(0);
-        d.fx = null; d.fy = null;
-      })
-    );
-
-  // Node background circle
-  nodeSel.append('circle')
-    .attr('class', 'node-bg')
-    .attr('r', d => nodeRadius(d));
-
-  // Label
-  nodeSel.append('text')
-    .attr('class', 'node-label')
-    .attr('y', NODE_TEXT_Y)
-    .text(d => d.id);
-
-  // Thumbnails in ring
-  nodeSel.each(function(node) {
-    const thumbs = nodeThumbData[node.id] || [];
-    if (!thumbs.length) return;
-    const group = d3.select(this);
-    const N = thumbs.length;
-    const clips = clipIds[node.id];
-
-    thumbs.forEach((thumb, i) => {
-      const angle = (2 * Math.PI * i / N) - Math.PI / 2;
-      const tx = Math.cos(angle) * RING_R;
-      const ty = Math.sin(angle) * RING_R;
-      const cid = clips[i];
-
-      // Update clip path position — we use a translate on the image instead
-      // Clip is at (0,0) — we translate the image group
-      const tg = group.append('g')
-        .attr('transform', `translate(${tx},${ty})`)
-        .attr('class', 'thumb-group')
-        .style('cursor', 'pointer')
-        .on('click', (evt) => {
-          evt.stopPropagation();
-          openDetail(thumb.entry, node.id, thumb.imageType);
-        });
-
-      // Circular clip
-      tg.append('clipPath').attr('id', `${cid}-local`)
-        .append('circle').attr('r', THUMB_R);
-
-      tg.append('image')
-        .attr('href', thumb.dataUrl)
-        .attr('x', -THUMB_R)
-        .attr('y', -THUMB_R)
-        .attr('width', THUMB_R * 2)
-        .attr('height', THUMB_R * 2)
-        .attr('clip-path', `url(#${cid}-local)`)
-        .attr('preserveAspectRatio', 'xMidYMid slice');
-
-      // Circle border
-      tg.append('circle')
-        .attr('r', THUMB_R)
-        .attr('fill', 'none')
-        .attr('stroke', 'rgba(108,99,255,0.4)')
-        .attr('stroke-width', 1.5);
-    });
-  });
-
-  // Force simulation
-  simulation = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(links)
-      .id(d => d.id)
-      .distance(d => 320 + (d.value || 0) * 20)
-      .strength(d => 0.04 + 0.02 * d.value / (maxLinkVal || 1))
-    )
-    .force('charge', d3.forceManyBody().strength(-800))
-    .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 20))
-    .force('center', d3.forceCenter(W / 2, H / 2))
-    .on('tick', () => {
-      linkSel
-        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-      nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
-    });
+  $('loadingOverlay').classList.add('hidden');
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Load data + init
+   Bootstrap
    ───────────────────────────────────────────────────────────────────────── */
 async function load() {
   try {
     const resp = await fetch('/api/brain');
-    if (!resp.ok) throw new Error('Failed to fetch brain data');
+    if (!resp.ok) throw new Error('Failed to fetch');
     const data = await resp.json();
-    await renderGraph(data);
+    await renderGraph3D(data);
   } catch (e) {
+    $('loadingOverlay').classList.add('hidden');
     $('emptyState').classList.remove('hidden');
     console.error('Brain load error:', e);
   }
