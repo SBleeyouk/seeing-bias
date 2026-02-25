@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Brain of AI</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d0d0f;
+    --surface: #16181e;
+    --surface2: #1e2028;
+    --border: #2a2d38;
+    --accent: #6c63ff;
+    --accent2: #ff6584;
+    --accent3: #27ae60;
+    --text: #e8eaf0;
+    --text-muted: #8b8fa8;
+    --radius: 10px;
+    --font: 'Inter', system-ui, sans-serif;
+    --panel-w: 380px;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; overflow: hidden; }
+
+  /* ── Layout ── */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ── Nav ── */
+  nav { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  nav a { color: var(--text-muted); text-decoration: none; font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 6px; transition: color .15s, background .15s; }
+  nav a:hover { color: var(--text); background: var(--surface2); }
+  nav a.active { color: var(--accent); background: rgba(108,99,255,.12); }
+  .nav-title { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-right: auto; letter-spacing: -0.01em; }
+  .nav-count { font-size: 0.75rem; color: var(--text-muted); }
+
+  /* ── Main area ── */
+  .main { flex: 1; position: relative; overflow: hidden; }
+
+  /* ── SVG graph ── */
+  #graphSvg { width: 100%; height: 100%; display: block; }
+  #graphSvg .link { stroke: var(--border); stroke-opacity: 0.5; fill: none; }
+  #graphSvg .node-label {
+    font-family: var(--font); font-size: 11px; font-weight: 700;
+    fill: var(--text); text-anchor: middle; dominant-baseline: middle;
+    pointer-events: none; letter-spacing: .04em; text-transform: uppercase;
+  }
+  #graphSvg .node-ring {
+    fill: none; stroke: var(--border); stroke-width: 1;
+    rx: 100;
+  }
+  #graphSvg .node-bg {
+    fill: var(--surface); stroke: var(--border); stroke-width: 1;
+  }
+
+  /* ── Empty state ── */
+  .empty-state {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px; pointer-events: none;
+  }
+  .empty-state.hidden { display: none; }
+  .empty-icon { font-size: 3rem; opacity: .3; }
+  .empty-title { font-size: 1.1rem; font-weight: 700; color: var(--text-muted); }
+  .empty-sub { font-size: 0.82rem; color: var(--text-muted); opacity: .7; text-align: center; max-width: 320px; }
+  .empty-sub a { color: var(--accent); text-decoration: none; }
+  .empty-sub a:hover { text-decoration: underline; }
+
+  /* ── Detail panel (right slide-in) ── */
+  .detail-panel {
+    position: fixed; top: 0; right: 0; width: var(--panel-w); height: 100vh;
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+    transform: translateX(100%); transition: transform .25s cubic-bezier(.4,0,.2,1);
+    z-index: 100;
+  }
+  .detail-panel.open { transform: translateX(0); }
+
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .panel-header h2 { font-size: 0.92rem; font-weight: 700; }
+  .panel-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem; padding: 4px; border-radius: 4px; }
+  .panel-close:hover { color: var(--text); background: var(--surface2); }
+
+  .panel-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+
+  .meta-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag { display: inline-block; padding: 2px 9px; border-radius: 100px; font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .tag-general  { background: rgba(108,99,255,.2); color: var(--accent); }
+  .tag-faceswap { background: rgba(255,101,132,.2); color: var(--accent2); }
+  .tag-encode   { background: rgba(39,174,96,.2);  color: var(--accent3); }
+  .tag-swapped  { background: rgba(255,165,0,.2);  color: orange; }
+
+  .meta-prompt { font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; font-style: italic; }
+  .meta-concepts { display: flex; gap: 5px; flex-wrap: wrap; }
+  .concept-chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 2px 8px; font-size: .75rem; color: var(--text-muted); }
+
+  .img-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .img-pair.trio { grid-template-columns: 1fr 1fr 1fr; }
+  .img-entry { display: flex; flex-direction: column; gap: 4px; }
+  .img-entry label { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
+  .img-entry img { width: 100%; border-radius: 6px; border: 1px solid var(--border); display: block; }
+
+  .panel-section-title { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 4px; }
+
+  /* thumbnail canvas inside SVG (foreignObject) */
+  .thumb-canvas { border-radius: 50%; overflow: hidden; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Nav -->
+  <nav>
+    <span class="nav-title">🧠 Brain of AI</span>
+    <a href="/index.html">Concept Attention</a>
+    <a href="/faceswap.html">Face-Swap Attention</a>
+    <a href="/brain.html" class="active">Brain of AI</a>
+    <span class="nav-count" id="navCount"></span>
+  </nav>
+
+  <!-- Main graph area -->
+  <div class="main" id="mainArea">
+    <svg id="graphSvg"></svg>
+
+    <!-- Empty state -->
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">🧠</div>
+      <div class="empty-title">No submissions yet</div>
+      <div class="empty-sub">
+        Run an analysis on the <a href="/index.html">Concept Attention</a>
+        or <a href="/faceswap.html">Face-Swap</a> pages,
+        then click <strong>Submit to Brain of AI</strong>.
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail panel -->
+  <div class="detail-panel" id="detailPanel">
+    <div class="panel-header">
+      <h2 id="panelTitle">Result</h2>
+      <button class="panel-close" id="panelClose">✕</button>
+    </div>
+    <div class="panel-body" id="panelBody"></div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   Constants / globals
+   ───────────────────────────────────────────────────────────────────────── */
+const THUMB_R      = 29;   // thumbnail circle radius px
+const RING_R       = 95;   // ring radius from node centre
+const NODE_TEXT_Y  = 0;    // label y-offset from node centre
+const NODE_PAD     = 24;   // extra padding around thumbnails for node-bg circle
+
+const $ = id => document.getElementById(id);
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Heatmap masking helper  (runs in an OffscreenCanvas)
+   Converts a plasma-colourmap heatmap + base image into a masked thumbnail:
+   - pixels where plasma luminance ≥ adaptive threshold are shown clearly
+   - remaining pixels are blended toward black proportionally
+   ───────────────────────────────────────────────────────────────────────── */
+function buildMaskedThumb(baseB64, hmB64, size) {
+  return new Promise(resolve => {
+    const baseImg = new Image();
+    const hmImg   = new Image();
+    let loaded = 0;
+    const onLoad = () => { if (++loaded === 2) draw(); };
+    baseImg.onload = onLoad;
+    hmImg.onload   = onLoad;
+    baseImg.src = 'data:image/png;base64,' + baseB64;
+    hmImg.src   = 'data:image/png;base64,' + hmB64;
+
+    function draw() {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      // Draw base image
+      ctx.drawImage(baseImg, 0, 0, size, size);
+      const baseData = ctx.getImageData(0, 0, size, size);
+
+      // Draw heatmap
+      ctx.drawImage(hmImg, 0, 0, size, size);
+      const hmData = ctx.getImageData(0, 0, size, size);
+
+      // Compute luminance per pixel from plasma heatmap
+      const lum = new Float32Array(size * size);
+      for (let i = 0; i < size * size; i++) {
+        const r = hmData.data[i*4]   / 255;
+        const g = hmData.data[i*4+1] / 255;
+        const b = hmData.data[i*4+2] / 255;
+        lum[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+
+      // Adaptive threshold: top 30% of pixels
+      const sorted = Float32Array.from(lum).sort();
+      const thresh = sorted[Math.floor(sorted.length * 0.70)] || 0.01;
+
+      // Build output: mix base image with black mask
+      const out = ctx.createImageData(size, size);
+      for (let i = 0; i < size * size; i++) {
+        const l = lum[i];
+        let factor;
+        if (l >= thresh) {
+          factor = 1.0;
+        } else {
+          // Smooth darkening — low-attention areas approach black
+          factor = Math.pow(l / thresh, 2) * 0.12;
+        }
+        out.data[i*4]   = Math.round(baseData.data[i*4]   * factor);
+        out.data[i*4+1] = Math.round(baseData.data[i*4+1] * factor);
+        out.data[i*4+2] = Math.round(baseData.data[i*4+2] * factor);
+        out.data[i*4+3] = 255;
+      }
+      ctx.putImageData(out, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    }
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Detail panel
+   ───────────────────────────────────────────────────────────────────────── */
+$('panelClose').addEventListener('click', () => {
+  $('detailPanel').classList.remove('open');
+});
+
+function openDetail(entry, conceptLabel, imageType) {
+  const panel = $('detailPanel');
+  const body  = $('panelBody');
+  $('panelTitle').textContent = `"${conceptLabel}" — ${imageType}`;
+
+  const isFaceswap = entry.type === 'faceswap';
+
+  // Tags
+  const typeTag    = `<span class="tag tag-${isFaceswap ? 'faceswap' : 'general'}">${isFaceswap ? 'Face-Swap' : 'General'}</span>`;
+  const imgTypeTag = `<span class="tag tag-${imageType === 'generated' ? 'swapped' : 'encode'}">${imageType === 'generated' ? (isFaceswap ? 'Swapped' : 'Generated') : 'Original'}</span>`;
+
+  // Concepts chips
+  const chips = entry.concepts.map(c =>
+    `<span class="concept-chip">${c}</span>`
+  ).join('');
+
+  // Images
+  let imagesHTML = '';
+  if (isFaceswap) {
+    imagesHTML = `
+      <div>
+        <div class="panel-section-title">Images</div>
+        <div class="img-pair trio">
+          <div class="img-entry">
+            <label>Original</label>
+            <img src="data:image/png;base64,${entry.original_image}" />
+          </div>
+          <div class="img-entry">
+            <label>Face Source</label>
+            <img src="data:image/png;base64,${entry.target_image}" />
+          </div>
+          <div class="img-entry">
+            <label>Swapped</label>
+            <img src="data:image/png;base64,${entry.generated_image}" />
+          </div>
+        </div>
+      </div>`;
+  } else {
+    imagesHTML = `
+      <div>
+        <div class="panel-section-title">Images</div>
+        <div class="img-pair">
+          <div class="img-entry">
+            <label>Original</label>
+            <img src="data:image/png;base64,${entry.original_image}" />
+          </div>
+          <div class="img-entry">
+            <label>Generated</label>
+            <img src="data:image/png;base64,${entry.generated_image}" />
+          </div>
+        </div>
+      </div>`;
+  }
+
+  body.innerHTML = `
+    <div class="meta-tags">${typeTag}${imgTypeTag}</div>
+    <div class="meta-prompt">"${entry.prompt}"</div>
+    <div>
+      <div class="panel-section-title">Concept tokens</div>
+      <div class="meta-concepts">${chips}</div>
+    </div>
+    ${imagesHTML}
+  `;
+
+  panel.classList.add('open');
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   D3 force graph
+   ───────────────────────────────────────────────────────────────────────── */
+let simulation = null;
+
+async function renderGraph(data) {
+  const { nodes, links, concept_images, total_submissions } = data;
+
+  $('navCount').textContent = `${total_submissions} submission${total_submissions !== 1 ? 's' : ''}`;
+
+  if (!nodes.length) {
+    $('emptyState').classList.remove('hidden');
+    return;
+  }
+  $('emptyState').classList.add('hidden');
+
+  const svg    = d3.select('#graphSvg');
+  const W      = $('mainArea').clientWidth;
+  const H      = $('mainArea').clientHeight;
+
+  svg.selectAll('*').remove();
+  if (simulation) simulation.stop();
+
+  // Defs — clipPath for circular thumbnails
+  const defs = svg.append('defs');
+
+  // Link scale
+  const maxLinkVal = d3.max(links, d => d.value) || 1;
+  const linkWidth  = d3.scaleLinear().domain([0, maxLinkVal]).range([0.5, 4]);
+
+  // Pre-compute masked thumbnails for all concept images
+  // concept_images: { concept: [{ original_image, generated_image, original_heatmap, generated_heatmap, ... }] }
+  const thumbSize = THUMB_R * 2;
+
+  // Build thumbnail data per node
+  const nodeThumbData = {}; // concept → [ { dataUrl, entry, imageType } ]
+  await Promise.all(nodes.map(async node => {
+    const entries = concept_images[node.id] || [];
+    const thumbs  = [];
+    for (const entry of entries) {
+      // Original masked
+      const origThumb = await buildMaskedThumb(entry.original_image, entry.original_heatmap, thumbSize);
+      thumbs.push({ dataUrl: origThumb, entry, imageType: 'original' });
+      // Generated masked
+      const genThumb = await buildMaskedThumb(entry.generated_image, entry.generated_heatmap, thumbSize);
+      thumbs.push({ dataUrl: genThumb, entry, imageType: 'generated' });
+    }
+    nodeThumbData[node.id] = thumbs;
+  }));
+
+  // Create clip paths for each thumb
+  let clipIdx = 0;
+  const clipIds = {};
+  nodes.forEach(node => {
+    const thumbs = nodeThumbData[node.id] || [];
+    clipIds[node.id] = [];
+    thumbs.forEach(() => {
+      const cid = `clip-${clipIdx++}`;
+      defs.append('clipPath').attr('id', cid)
+        .append('circle').attr('r', THUMB_R).attr('cx', 0).attr('cy', 0);
+      clipIds[node.id].push(cid);
+    });
+  });
+
+  // Container group for zoom/pan
+  const g = svg.append('g').attr('class', 'graph-root');
+
+  // Zoom behaviour
+  svg.call(d3.zoom()
+    .scaleExtent([0.2, 4])
+    .on('zoom', evt => g.attr('transform', evt.transform))
+  );
+
+  // Links
+  const linkSel = g.append('g').attr('class', 'links')
+    .selectAll('line').data(links).join('line')
+    .attr('class', 'link')
+    .attr('stroke-width', d => linkWidth(d.value));
+
+  // Node groups
+  const nodeRadius = node => {
+    const thumbCount = (nodeThumbData[node.id] || []).length;
+    return thumbCount > 0 ? RING_R + THUMB_R + NODE_PAD : 50;
+  };
+
+  const nodeSel = g.append('g').attr('class', 'nodes')
+    .selectAll('g').data(nodes).join('g')
+    .attr('class', 'node-group')
+    .call(d3.drag()
+      .on('start', (evt, d) => {
+        if (!evt.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on('drag', (evt, d) => { d.fx = evt.x; d.fy = evt.y; })
+      .on('end', (evt, d) => {
+        if (!evt.active) simulation.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      })
+    );
+
+  // Node background circle
+  nodeSel.append('circle')
+    .attr('class', 'node-bg')
+    .attr('r', d => nodeRadius(d));
+
+  // Label
+  nodeSel.append('text')
+    .attr('class', 'node-label')
+    .attr('y', NODE_TEXT_Y)
+    .text(d => d.id);
+
+  // Thumbnails in ring
+  nodeSel.each(function(node) {
+    const thumbs = nodeThumbData[node.id] || [];
+    if (!thumbs.length) return;
+    const group = d3.select(this);
+    const N = thumbs.length;
+    const clips = clipIds[node.id];
+
+    thumbs.forEach((thumb, i) => {
+      const angle = (2 * Math.PI * i / N) - Math.PI / 2;
+      const tx = Math.cos(angle) * RING_R;
+      const ty = Math.sin(angle) * RING_R;
+      const cid = clips[i];
+
+      // Update clip path position — we use a translate on the image instead
+      // Clip is at (0,0) — we translate the image group
+      const tg = group.append('g')
+        .attr('transform', `translate(${tx},${ty})`)
+        .attr('class', 'thumb-group')
+        .style('cursor', 'pointer')
+        .on('click', (evt) => {
+          evt.stopPropagation();
+          openDetail(thumb.entry, node.id, thumb.imageType);
+        });
+
+      // Circular clip
+      tg.append('clipPath').attr('id', `${cid}-local`)
+        .append('circle').attr('r', THUMB_R);
+
+      tg.append('image')
+        .attr('href', thumb.dataUrl)
+        .attr('x', -THUMB_R)
+        .attr('y', -THUMB_R)
+        .attr('width', THUMB_R * 2)
+        .attr('height', THUMB_R * 2)
+        .attr('clip-path', `url(#${cid}-local)`)
+        .attr('preserveAspectRatio', 'xMidYMid slice');
+
+      // Circle border
+      tg.append('circle')
+        .attr('r', THUMB_R)
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(108,99,255,0.4)')
+        .attr('stroke-width', 1.5);
+    });
+  });
+
+  // Force simulation
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links)
+      .id(d => d.id)
+      .distance(d => 320 + (d.value || 0) * 20)
+      .strength(d => 0.04 + 0.02 * d.value / (maxLinkVal || 1))
+    )
+    .force('charge', d3.forceManyBody().strength(-800))
+    .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 20))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .on('tick', () => {
+      linkSel
+        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Load data + init
+   ───────────────────────────────────────────────────────────────────────── */
+async function load() {
+  try {
+    const resp = await fetch('/api/brain');
+    if (!resp.ok) throw new Error('Failed to fetch brain data');
+    const data = await resp.json();
+    await renderGraph(data);
+  } catch (e) {
+    $('emptyState').classList.remove('hidden');
+    console.error('Brain load error:', e);
+  }
+}
+
+load();
+</script>
+</body>
+</html>

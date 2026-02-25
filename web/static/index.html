@@ -134,6 +134,15 @@
 
   /* Divider */
   .divider { border: none; border-top: 1px solid var(--border); }
+
+  /* Submit to Brain */
+  .submit-brain-bar { display: none; align-items: center; gap: 14px; padding: 14px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .submit-brain-bar.visible { display: flex; }
+  .btn-brain { background: transparent; border: 1px solid #6c63ff88; color: var(--text); }
+  .btn-brain:hover { border-color: var(--accent); background: rgba(108,99,255,.12); }
+  .btn-brain:disabled { opacity: .45; }
+  .submit-confirm { font-size: .8rem; color: #27ae60; display: none; }
+  .submit-confirm.visible { display: inline; }
 </style>
 </head>
 <body>
@@ -143,6 +152,7 @@
   <nav>
     <a href="/index.html" class="active">Concept Attention</a>
     <a href="/faceswap.html">Face-Swap Attention</a>
+    <a href="/brain.html">Brain of AI</a>
   </nav>
 
   <!-- Header -->
@@ -238,6 +248,13 @@
   <!-- Visualization -->
   <div class="viz-section" id="vizSection">
 
+    <!-- Submit to Brain -->
+    <div class="submit-brain-bar" id="submitBar">
+      <button class="btn btn-brain" id="submitBrainBtn">🧠 Submit to Brain of AI</button>
+      <span class="submit-confirm" id="submitConfirm">✓ Submitted! <a href="/brain.html">View Brain →</a></span>
+      <span style="font-size:.78rem;color:var(--text-muted);margin-left:4px;">Share your results with the collective intelligence map.</span>
+    </div>
+
     <!-- Scrubber -->
     <div class="panel scrubber-panel">
       <div style="font-size:.8rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;">Denoising Timestep</div>
@@ -272,11 +289,15 @@ const state = {
   concepts: [],
   // temporal data: [step][concept] = HTMLImageElement (heatmap)
   temporalHeatmapImgs: [],
+  // raw b64 per step: [step][concept] = b64 string  (for brain submission)
+  temporalHeatmapsRaw: [],
   // original heatmap: [concept] = HTMLImageElement
   origHeatmapImgs: [],
   // base images
   origImgEl: null,
   genImgEl: null,
+  // last done result (for brain submission)
+  lastResult: null,
   // playback
   playing: false,
   playTimer: null,
@@ -419,6 +440,7 @@ function openWebSocket(jobId, w, h) {
         return img;
       });
       state.temporalHeatmapImgs[msg.step] = stepImgs;
+      state.temporalHeatmapsRaw[msg.step] = msg.heatmaps;
       state.totalSteps = msg.total_steps;
       // Live update grid if it's already built
       if (state.temporalHeatmapImgs.length === 1) {
@@ -432,6 +454,7 @@ function openWebSocket(jobId, w, h) {
       setStatus('done');
       setProgress(100, 'Done!');
       runBtn.disabled = false;
+      state.lastResult = msg;
 
       state.totalSteps = msg.num_steps;
 
@@ -454,8 +477,11 @@ function openWebSocket(jobId, w, h) {
       scrubber.max = Math.max(state.totalSteps - 1, 0);
       stepLabel.textContent = `Step ${state.currentStep + 1} / ${state.totalSteps}`;
 
-      // Show viz
+      // Show viz + submit bar
       vizSection.classList.add('visible');
+      document.getElementById('submitBar').classList.add('visible');
+      document.getElementById('submitBrainBtn').disabled = false;
+      document.getElementById('submitConfirm').classList.remove('visible');
       // Wait for images to load then re-render
       Promise.all([
         waitLoad(state.origImgEl),
@@ -659,11 +685,14 @@ function setError(msg) {
 
 function resetViz() {
   vizSection.classList.remove('visible');
+  document.getElementById('submitBar').classList.remove('visible');
   gridPanel.innerHTML = '';
   state.temporalHeatmapImgs = [];
+  state.temporalHeatmapsRaw = [];
   state.origHeatmapImgs = [];
   state.origImgEl = null;
   state.genImgEl = null;
+  state.lastResult = null;
   state.currentStep = 0;
   state.totalSteps = 0;
   scrubber.value = 0;
@@ -671,6 +700,46 @@ function resetViz() {
   stepLabel.textContent = 'Step 0 / 0';
   stopPlay();
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Submit to Brain of AI
+   ───────────────────────────────────────────────────────────────────────── */
+document.getElementById('submitBrainBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('submitBrainBtn');
+  const confirm = document.getElementById('submitConfirm');
+  const msg = state.lastResult;
+  if (!msg) return;
+
+  // Use last denoising step's heatmaps as the "generated image heatmaps"
+  const lastIdx = state.totalSteps - 1;
+  const genHeatmaps = state.temporalHeatmapsRaw[lastIdx] || [];
+
+  btn.disabled = true;
+  btn.textContent = '🧠 Submitting…';
+
+  try {
+    const resp = await fetch('/api/brain/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'general',
+        prompt: $('prompt').value.trim(),
+        concepts: state.concepts,
+        original_image_b64: msg.original_image,
+        generated_image_b64: msg.generated_image,
+        original_heatmaps_b64: msg.original_heatmaps,
+        generated_heatmaps_b64: genHeatmaps,
+      }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    btn.textContent = '🧠 Submitted';
+    confirm.classList.add('visible');
+  } catch (e) {
+    btn.textContent = '🧠 Submit to Brain of AI';
+    btn.disabled = false;
+    alert('Submit failed: ' + e.message);
+  }
+});
 </script>
 </body>
 </html>

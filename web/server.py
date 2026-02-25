@@ -216,6 +216,27 @@ _faceswap_jobs: dict[str, FaceSwapJob] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Brain / collective intelligence store
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SubmitRequest(BaseModel):
+    type: str                            # "general" | "faceswap"
+    prompt: str
+    concepts: list[str]
+    original_image_b64: str
+    generated_image_b64: str
+    original_heatmaps_b64: list[str]     # [concept_idx] → b64 PNG
+    generated_heatmaps_b64: list[str]    # [concept_idx] → b64 PNG
+    # face-swap extras (optional)
+    target_image_b64: str | None = None
+    swapped_image_b64: str | None = None
+    swapped_heatmaps_b64: list[str] | None = None
+
+
+_brain_results: list[dict] = []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -506,6 +527,65 @@ def create_app(pipeline, faceswap_pipeline=None) -> FastAPI:
                 await websocket.send_json({"type": "error", "error": str(e)})
             except Exception:
                 pass
+
+    # ── Brain / collective intelligence ────────────────────────────────────
+
+    @app.post("/api/brain/submit")
+    async def brain_submit(req: SubmitRequest):
+        entry = req.model_dump()
+        entry["id"] = str(uuid.uuid4())
+        _brain_results.append(entry)
+        return {"id": entry["id"], "total": len(_brain_results)}
+
+    @app.get("/api/brain")
+    async def get_brain():
+        from collections import defaultdict
+
+        concept_images: dict[str, list] = defaultdict(list)
+        for sub in _brain_results:
+            for i, concept in enumerate(sub["concepts"]):
+                img_entry: dict[str, Any] = {
+                    "submission_id": sub["id"],
+                    "type": sub["type"],
+                    "prompt": sub["prompt"],
+                    "concepts": sub["concepts"],
+                    "original_image": sub["original_image_b64"],
+                    "generated_image": sub["generated_image_b64"],
+                    "original_heatmap": (
+                        sub["original_heatmaps_b64"][i]
+                        if i < len(sub["original_heatmaps_b64"]) else None
+                    ),
+                    "generated_heatmap": (
+                        sub["generated_heatmaps_b64"][i]
+                        if i < len(sub["generated_heatmaps_b64"]) else None
+                    ),
+                }
+                if sub.get("target_image_b64"):
+                    img_entry["target_image"] = sub["target_image_b64"]
+                if sub.get("swapped_image_b64"):
+                    img_entry["swapped_image"] = sub["swapped_image_b64"]
+                    shm = sub.get("swapped_heatmaps_b64") or []
+                    img_entry["swapped_heatmap"] = shm[i] if i < len(shm) else None
+                concept_images[concept].append(img_entry)
+
+        # Co-occurrence links (strength = number of submissions sharing both concepts)
+        link_counts: dict[tuple, int] = defaultdict(int)
+        for sub in _brain_results:
+            cs = sub["concepts"]
+            for j in range(len(cs)):
+                for k in range(j + 1, len(cs)):
+                    link_counts[tuple(sorted([cs[j], cs[k]]))] += 1
+
+        nodes = [{"id": c, "count": len(imgs)} for c, imgs in concept_images.items()]
+        links = [{"source": a, "target": b, "value": v}
+                 for (a, b), v in link_counts.items()]
+
+        return {
+            "nodes": nodes,
+            "links": links,
+            "concept_images": dict(concept_images),
+            "total_submissions": len(_brain_results),
+        }
 
     # ── Static files (frontend) ────────────────────────────────────────────
 

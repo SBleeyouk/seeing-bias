@@ -30,6 +30,16 @@
   nav a:hover { color: var(--text); background: var(--surface2); }
   nav a.active { color: var(--accent); background: rgba(108,99,255,.12); }
 
+  /* ── Submit bar ── */
+  .submit-brain-bar { display: none; align-items: center; gap: 12px; padding: 10px 16px; background: rgba(108,99,255,.08); border: 1px solid rgba(108,99,255,.2); border-radius: 8px; }
+  .submit-brain-bar.visible { display: flex; }
+  .btn-brain { background: linear-gradient(135deg, #6c63ff, #a855f7); color: #fff; }
+  .btn-brain:hover { opacity: .88; }
+  .submit-confirm { font-size: 0.82rem; color: #27ae60; display: none; }
+  .submit-confirm.visible { display: inline; }
+  .submit-confirm a { color: #6c63ff; text-decoration: none; }
+  .submit-confirm a:hover { text-decoration: underline; }
+
   /* ── Header ── */
   header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
   header h1 span { color: var(--accent2); }
@@ -141,6 +151,7 @@
   <nav>
     <a href="/index.html">Concept Attention</a>
     <a href="/faceswap.html" class="active">Face-Swap Attention</a>
+    <a href="/brain.html">Brain of AI</a>
   </nav>
 
   <!-- Header -->
@@ -217,6 +228,12 @@
   <!-- Visualization -->
   <div class="viz-section" id="vizSection">
 
+    <!-- Submit bar -->
+    <div class="submit-brain-bar" id="submitBar">
+      <button class="btn btn-brain" id="submitBrainBtn">🧠 Submit to Brain of AI</button>
+      <span class="submit-confirm" id="submitConfirm">✓ Submitted! <a href="/brain.html">View Brain →</a></span>
+    </div>
+
     <!-- Legend -->
     <div class="panel" style="padding: 14px 20px;">
       <div class="legend">
@@ -245,6 +262,7 @@ const state = {
   concepts: [],
   ws: null,
   jobId: null,
+  lastResult: null,
   // Images
   origImgEl: null,
   tgtImgEl: null,
@@ -373,6 +391,8 @@ function openWS(jobId, w, h) {
       setProgress(100, 'Done!');
       $('runBtn').disabled = false;
 
+      state.lastResult = msg;
+
       // Load images
       state.origImgEl = loadImg(msg.original_image);
       state.tgtImgEl  = loadImg(msg.target_image);
@@ -382,6 +402,10 @@ function openWS(jobId, w, h) {
       state.swapHeatmaps = msg.swapped_heatmaps.map(b64 => loadImg(b64));
 
       buildGrid(msg.concepts, w, h);
+
+      // Show submit bar
+      $('submitBar').classList.add('visible');
+      $('submitConfirm').classList.remove('visible');
 
       // Wait for all images then render
       const allImgs = [
@@ -531,11 +555,49 @@ function setError(msg) {
 function resetViz() {
   $('vizSection').classList.remove('visible');
   $('gridPanel').innerHTML = '';
+  $('submitBar').classList.remove('visible');
+  $('submitConfirm').classList.remove('visible');
   Object.assign(state, {
     origImgEl: null, tgtImgEl: null, swapImgEl: null,
     origHeatmaps: [], tgtHeatmaps: [], swapHeatmaps: [],
+    lastResult: null,
   });
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Submit to Brain
+   ───────────────────────────────────────────────────────────────────────── */
+$('submitBrainBtn').addEventListener('click', async () => {
+  const msg = state.lastResult;
+  if (!msg) return;
+
+  $('submitBrainBtn').disabled = true;
+
+  try {
+    const resp = await fetch('/api/brain/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'faceswap',
+        prompt: $('prompt').value.trim() || 'a person',
+        concepts: state.concepts,
+        original_image_b64: msg.original_image,
+        generated_image_b64: msg.swapped_image,
+        original_heatmaps_b64: msg.original_heatmaps,
+        generated_heatmaps_b64: msg.swapped_heatmaps,
+        target_image_b64: msg.target_image,
+        swapped_image_b64: msg.swapped_image,
+        swapped_heatmaps_b64: msg.swapped_heatmaps,
+      }),
+    });
+    if (!resp.ok) throw new Error('Submit failed');
+    $('submitConfirm').classList.add('visible');
+  } catch (e) {
+    alert('Failed to submit: ' + e.message);
+  } finally {
+    $('submitBrainBtn').disabled = false;
+  }
+});
 </script>
 </body>
 </html>
