@@ -2,23 +2,23 @@
 Colab launch script for the Concept Attention Explorer web UI.
 
 Usage in a Colab cell:
-    # 1. Install deps (run once)
-    # !pip install fastapi uvicorn[standard] pyngrok python-multipart
+    # ── Cell 1: install deps (run once) ──────────────────────────────────────
+    !pip install -q fastapi "uvicorn[standard]" pyngrok python-multipart \\
+                   insightface onnxruntime-gpu opencv-python
 
-    # 2. Load the pipeline
-    import sys
-    sys.path.insert(0, '/content/ConceptAttention')
-    from concept_attention.flux2 import ConceptAttentionFlux2Pipeline
-    pipe = ConceptAttentionFlux2Pipeline(model_name="flux.2-dev", device="cuda:0")
+    # ── Cell 2: load pipelines ────────────────────────────────────────────────
+    import sys; sys.path.insert(0, '/content/seeing-bias')
+    from concept_attention.flux.pipeline import ConceptAttentionFluxPipeline
+    from concept_attention.flux.faceswap_pipeline import ConceptAttentionFaceSwapPipeline
 
-    # 3. Launch
-    import sys
-    sys.path.insert(0, '/content/ConceptAttention')
+    concept_pipe  = ConceptAttentionFluxPipeline(model_name="flux-schnell", device="cuda:0")
+    faceswap_pipe = ConceptAttentionFaceSwapPipeline(concept_pipeline=concept_pipe)
+
+    # ── Cell 3: launch ────────────────────────────────────────────────────────
     from web.launch import launch
-    launch(pipe)
+    launch(concept_pipe, faceswap_pipeline=faceswap_pipe)
 """
 import os
-import sys
 import threading
 import time
 
@@ -26,21 +26,25 @@ import time
 PORT = 8000
 
 
-def launch(pipeline, port: int = PORT, ngrok_authtoken: str | None = None):
+def launch(
+    pipeline,
+    faceswap_pipeline=None,
+    port: int = PORT,
+    ngrok_authtoken: str | None = None,
+):
     """
-    Start the FastAPI server and expose it via ngrok.
+    Start the FastAPI server in a background thread and expose it via ngrok.
 
     Args:
-        pipeline: An initialized ConceptAttentionFlux2Pipeline instance.
-        port:     Local port to bind (default 8000).
-        ngrok_authtoken: Your ngrok auth token (optional but recommended for
-                  free tier — avoids session limits).
-                  Get one free at https://dashboard.ngrok.com/
+        pipeline:         ConceptAttentionFluxPipeline instance.
+        faceswap_pipeline: ConceptAttentionFaceSwapPipeline instance (optional).
+        port:             Local port to bind (default 8000).
+        ngrok_authtoken:  ngrok auth token (free at https://dashboard.ngrok.com/).
     """
     from web.server import create_app
     import uvicorn
 
-    app = create_app(pipeline)
+    app = create_app(pipeline, faceswap_pipeline=faceswap_pipeline)
 
     # ── Start uvicorn in a background thread ──────────────────────────────
     def _run():
@@ -82,35 +86,28 @@ def launch(pipeline, port: int = PORT, ngrok_authtoken: str | None = None):
 
 
 def colab_quickstart():
-    """
-    Print a ready-to-paste Colab setup snippet.
-    """
-    snippet = """
+    """Print a ready-to-paste Colab setup snippet."""
+    print("""
 # ── Cell 1: install dependencies ─────────────────────────────────────────────
-!pip install -q fastapi "uvicorn[standard]" pyngrok python-multipart
+!pip install -q fastapi "uvicorn[standard]" pyngrok python-multipart \\
+               insightface onnxruntime-gpu opencv-python
 
-# ── Cell 2: load the pipeline ─────────────────────────────────────────────────
+# ── Cell 2: load pipelines ────────────────────────────────────────────────────
 import sys
-sys.path.insert(0, '/content/ConceptAttention')
+sys.path.insert(0, '/content/seeing-bias')
 
-from concept_attention.flux2 import ConceptAttentionFlux2Pipeline
+from concept_attention.flux.pipeline import ConceptAttentionFluxPipeline
+from concept_attention.flux.faceswap_pipeline import ConceptAttentionFaceSwapPipeline
 
-pipe = ConceptAttentionFlux2Pipeline(
-    model_name="flux.2-dev",
-    device="cuda:0",
-    offload_model=True,   # save VRAM by offloading text encoder between steps
-)
+concept_pipe  = ConceptAttentionFluxPipeline(model_name="flux-schnell", device="cuda:0")
+faceswap_pipe = ConceptAttentionFaceSwapPipeline(concept_pipeline=concept_pipe)
 
 # ── Cell 3: launch the web server ─────────────────────────────────────────────
 from web.launch import launch
 
-# Optional: set your ngrok auth token to avoid session limits
-# (free at https://dashboard.ngrok.com/)
-NGROK_TOKEN = ""   # paste your token here, or set env var NGROK_AUTHTOKEN
-
-url = launch(pipe, ngrok_authtoken=NGROK_TOKEN or None)
-"""
-    print(snippet)
+NGROK_TOKEN = ""   # free at https://dashboard.ngrok.com/
+url = launch(concept_pipe, faceswap_pipeline=faceswap_pipe, ngrok_authtoken=NGROK_TOKEN or None)
+""")
 
 
 if __name__ == "__main__":

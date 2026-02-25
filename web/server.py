@@ -518,6 +518,35 @@ def create_app(pipeline, faceswap_pipeline=None) -> FastAPI:
 
 def run_server(pipeline, faceswap_pipeline=None,
                host: str = "0.0.0.0", port: int = 8000, **kwargs):
-    """Start the uvicorn server. Call from Colab or local."""
+    """
+    Start the uvicorn server.
+
+    Works both locally (blocking) and inside Colab / Jupyter notebooks
+    (non-blocking background thread — Colab already runs an asyncio loop).
+
+    For Colab with ngrok, prefer web.launch.launch() which also sets up a
+    public URL.
+    """
+    import asyncio as _asyncio
     app = create_app(pipeline, faceswap_pipeline=faceswap_pipeline)
-    uvicorn.run(app, host=host, port=port, **kwargs)
+
+    def _run():
+        uvicorn.run(app, host=host, port=port, log_level="warning", **kwargs)
+
+    # Detect whether we are inside a running event loop (Colab / Jupyter).
+    try:
+        _asyncio.get_running_loop()
+        _in_jupyter = True
+    except RuntimeError:
+        _in_jupyter = False
+
+    if _in_jupyter:
+        import time
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        time.sleep(2)   # give uvicorn a moment to bind
+        print(f"Server running at http://localhost:{port}")
+        print("(background thread — call web.launch.launch() to get a public ngrok URL)")
+        return t
+    else:
+        _run()  # blocking in a plain Python script
