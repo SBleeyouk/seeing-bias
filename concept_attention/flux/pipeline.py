@@ -245,9 +245,6 @@ class ConceptAttentionFluxPipeline:
         after each denoising step if provided. Heatmaps are base64-encoded PNGs,
         one per concept — ready to stream to a frontend.
         """
-        from concept_attention.flux.flux.src.flux.sampling import denoise as flux_denoise
-
-        # Use the existing denoise function from flux for the full loop
         img = inp["img"]
         guidance_vec = torch.full(
             (img.shape[0],), guidance,
@@ -271,7 +268,7 @@ class ConceptAttentionFluxPipeline:
                 dtype=img.dtype, device=img.device
             )
 
-            _, step_dicts = self.flux_generator.model(
+            pred, step_dicts = self.flux_generator.model(
                 img=img,
                 img_ids=inp["img_ids"],
                 txt=inp["txt"],
@@ -288,23 +285,8 @@ class ConceptAttentionFluxPipeline:
                 layer_indices=layer_indices,
             )
 
-            # Euler step
-            pred_list = [d.get("pred", None) for d in step_dicts if "pred" in d]
-            if pred_list:
-                pred = pred_list[-1]
-                img = img + (t_prev - t_curr) * pred
-            else:
-                # Fallback: call full flux denoise for this single step
-                img, _, _ = flux_denoise(
-                    self.flux_generator.model,
-                    **{k: v for k, v in inp.items()},
-                    timesteps=[t_curr, t_prev],
-                    guidance=guidance,
-                    joint_attention_kwargs=None,
-                    cache_vectors=should_cache,
-                    layer_indices=layer_indices,
-                    timestep_indices=[0],
-                )
+            # Euler step (flow matching: img_next = img + (t_prev - t_curr) * velocity)
+            img = img + (t_prev - t_curr) * pred
 
             concept_attention_dicts_all.append(step_dicts)
 
@@ -418,7 +400,7 @@ class ConceptAttentionFluxPipeline:
             init_resized = init_image.resize((width, height), PIL.Image.LANCZOS).convert("RGB")
             img_np = np.array(init_resized).astype(np.float32) / 127.5 - 1.0  # [-1, 1]
             img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)
-            img_t = img_t.to(self.device, dtype=torch.bfloat16)
+            img_t = img_t.to(self.device, dtype=torch.float32)
 
             if self.offload_model:
                 self.flux_generator.ae.encoder.to(self.device)
