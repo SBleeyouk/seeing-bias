@@ -88,15 +88,14 @@ class InsightFaceSwapper:
         import insightface
         from insightface.app import FaceAnalysis
 
-        cuda = "cuda" in device
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"] if cuda
-            else ["CPUExecutionProvider"]
-        )
+        # Always use CPU for InsightFace ONNX inference to avoid CUBLAS/CUDA
+        # allocation failures that occur when the Flux transformer is occupying
+        # GPU VRAM.  Face detection and swapping are fast enough on CPU.
+        providers = ["CPUExecutionProvider"]
 
         print("  Loading InsightFace face analyzer (buffalo_l)…")
         self.analyzer = FaceAnalysis(name="buffalo_l", providers=providers)
-        self.analyzer.prepare(ctx_id=0 if cuda else -1, det_size=(640, 640))
+        self.analyzer.prepare(ctx_id=-1, det_size=(640, 640))
 
         print("  Loading inswapper_128 model…")
         model_path = self._get_model()
