@@ -173,10 +173,10 @@
 
       <!-- Steps -->
       <div class="field">
-        <label>Denoising Steps</label>
+        <label>Denoising Steps <span style="font-weight:400;text-transform:none;">(flux-schnell: 1–4)</span></label>
         <div class="slider-row">
-          <input type="range" id="numSteps" min="8" max="40" step="1" value="20" />
-          <span class="slider-val" id="numStepsVal">20</span>
+          <input type="range" id="numSteps" min="1" max="4" step="1" value="4" />
+          <span class="slider-val" id="numStepsVal">4</span>
         </div>
       </div>
 
@@ -189,14 +189,8 @@
         </div>
       </div>
 
-      <!-- Guidance -->
-      <div class="field">
-        <label>Guidance Scale</label>
-        <div class="slider-row">
-          <input type="range" id="guidance" min="1.0" max="10.0" step="0.5" value="4.0" />
-          <span class="slider-val" id="guidanceVal">4.0</span>
-        </div>
-      </div>
+      <!-- Guidance: hidden for schnell (always 0.0) -->
+      <input type="hidden" id="guidance" value="0.0" />
 
       <!-- Seed -->
       <div class="field">

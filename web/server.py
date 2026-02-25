@@ -40,11 +40,11 @@ class AnalyzeRequest(BaseModel):
     concepts: list[str]
     width: int = 1024
     height: int = 1024
-    num_inference_steps: int = 20
+    # flux-schnell is a 4-step distilled model with no classifier-free guidance
+    num_inference_steps: int = 4
     image2image_strength: float = 0.8
-    guidance: float = 4.0
+    guidance: float = 0.0   # schnell does not use guidance
     seed: int = 0
-    softmax_temperature: float = 1000.0
     cmap: str = "plasma"
 
 
@@ -170,7 +170,6 @@ def _run_pipeline(job: Job):
             image2image_strength=req.image2image_strength,
             guidance=req.guidance,
             seed=req.seed,
-            softmax_temperature=req.softmax_temperature,
             cmap=req.cmap,
             on_step_callback=job.on_step,
         )
