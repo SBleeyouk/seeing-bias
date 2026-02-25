@@ -590,9 +590,17 @@ class ConceptAttentionFluxPipeline:
         # Cast to bfloat16 to match transformer model weights
         noisy = noisy.to(torch.bfloat16)
 
+        # When offloading: the transformer model may have been left on GPU by a previous
+        # encode_image or generate_image call.  Move it to CPU now so T5/CLIP have
+        # enough VRAM.  A partial move (OOM mid-transfer) would leave T5 in a mixed
+        # CPU/GPU state, causing the "tensors on different devices" error.
         if self.flux_generator.offload:
-            self.flux_generator.t5 = self.flux_generator.t5.to(device)
-            self.flux_generator.clip = self.flux_generator.clip.to(device)
+            self.flux_generator.model.cpu()
+            torch.cuda.empty_cache()
+
+        # Always ensure encoders are on the correct device
+        self.flux_generator.t5 = self.flux_generator.t5.to(device)
+        self.flux_generator.clip = self.flux_generator.clip.to(device)
 
         inp = prepare(
             t5=self.flux_generator.t5,
@@ -635,6 +643,12 @@ class ConceptAttentionFluxPipeline:
             cache_vectors=cache_vectors,
             layer_indices=layer_indices,
         )
+
+        # Move model back to CPU after the forward pass so the next encode_image
+        # call starts with a clean (CPU-only) model state.
+        if self.flux_generator.offload:
+            self.flux_generator.model.cpu()
+            torch.cuda.empty_cache()
 
         # ── Compute heatmaps ──────────────────────────────────────────────────
         # Wrap as single-step for stacking: shape (1, layers, batch, tokens, dim)
