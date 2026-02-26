@@ -1,155 +1,184 @@
-# ConceptAttention: Diffusion Transformers Learn Highly Interpretable Features
-[![Open in Spaces](https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-sm-dark.svg)](https://huggingface.co/spaces/helblazer811/ConceptAttention)
-[![arxiv badge](https://img.shields.io/badge/arXiv-2502.04320-red)](https://arxiv.org/abs/2502.04320)
+# Seeing Bias — Concept Attention Explorer
 
-ConceptAttention is an interpretability method for multi-modal diffusion transformers. We implement it for the Flux DiT architecture in PyTorch. Check out the paper [here](https://arxiv.org/abs/2502.04320).
+Seeing Bias is an interactive web tool for exploring how a diffusion model's internal attention distributes across user-defined concept tokens — and how that distribution shifts when a face is swapped into an image.
 
-<p align="center">
-    <img src="images/teaser.png" alt="Teaser Image" width="800"/>
-</p>
+Built on the [ConceptAttention](https://arxiv.org/abs/2502.04320) interpretability method for Flux DiT (Black Forest Labs), extended with a face-swap pipeline and a collective "Brain of AI" visualization.
 
-# Code setup
+---
 
-You will then need to install the code here locally by running
-```bash
-pip install -e .
-```
+## Demo
 
-# Running the model 
+[![Watch Demo](https://drive.google.com/file/d/11InzsXwZHNEq-7Gx2LWfSWHgKJAISnPz&sz=w1280)](https://drive.google.com/file/d/11InzsXwZHNEq-7Gx2LWfSWHgKJAISnPz/view?usp=sharing)
 
-Here is an example of how to run Flux with Concept Attention
+> Click the image to play the video on Google Drive.
 
+---
+
+## What It Does
+
+The model encodes an image through the Flux Schnell transformer and measures, for each spatial patch, how strongly the model attends to each concept word you provide. This produces per-concept spatial heatmaps — no training required, fully zero-shot.
+
+Three pages let you explore this from different angles:
+
+### Concept Attention Explorer (`/index.html`)
+Upload an image, write a prompt, and list concept tokens (e.g. `face, skin, hair, background`). The pipeline:
+1. Encodes your image with the Flux transformer
+2. Runs image-to-image generation (controllable strength)
+3. Computes attention heatmaps for every concept token at every diffusion step
+4. Streams per-step heatmaps to the browser in real time via WebSocket
+
+A time scrubber lets you replay how attention evolves across diffusion steps. Original and generated images are shown side by side for each concept.
+
+### Face-Swap Attention Explorer (`/faceswap.html`)
+Upload two images. The pipeline:
+1. Swaps the dominant face from the Face Source into the Original image (InsightFace `inswapper_128`)
+2. Runs Concept Attention on all three images: Original, Face Source, Swapped
+3. Returns a comparison grid — one row per image, one column per concept
+
+This reveals how the model's spatial attention changes purely due to a face change, holding the scene constant.
+
+### Brain of AI (`/brain.html`)
+After any analysis, click **Submit to Brain of AI**. Results accumulate in a 3D force-directed graph:
+- Each concept token is a node
+- Thumbnail images orbit each node, masked so only the high-attention region is visible (top 30% luminance threshold)
+- Link thickness encodes how often two concepts co-occur across submissions
+- Click a thumbnail → detail panel with heatmap-overlaid images
+- Click a node label → gallery of all submissions for that concept
+
+---
+
+## Running on Google Colab
+
+Open `seeing_bias_run.ipynb` in Google Colab (GPU runtime required — A100 or L4 recommended).
+
+The notebook has four cells:
+
+**Cell 1 — Install dependencies**
 ```python
-from concept_attention import ConceptAttentionFluxPipeline
-
-pipeline = ConceptAttentionFluxPipeline(
-    model_name="flux-schnell",
-    device="cuda:0"
-)
-
-prompt = "A dragon standing on a rock. "
-concepts = ["dragon", "rock", "sky", "cloud"]
-
-pipeline_output = pipeline.generate_image(
-    prompt=prompt,
-    concepts=concepts,
-    width=1024,
-    height=1024,
-)
-
-image = pipeline_output.image
-concept_heatmaps = pipeline_output.concept_heatmaps
-
-image.save("image.png")
-for concept, concept_heatmap in zip(concepts, concept_heatmaps):
-    concept_heatmap.save(f"{concept}.png")
+!pip install -q fastapi "uvicorn[standard]" pyngrok python-multipart \
+               insightface onnxruntime-gpu opencv-python huggingface_hub
+!git clone https://github.com/sbleeyouk/seeing-bias/content/seeing-bias
+import sys; sys.path.insert(0, '/content/seeing-bias')
+!pip install -q -e /content/seeing-bias
 ```
 
-# Examples
-
-Example scripts are located in the [`examples/`](examples) directory:
-
-| Script | Description |
-|--------|-------------|
-| `encode_image_flux.py` | Encode an existing image and generate concept heatmaps (Flux 1) |
-| `generate_image_flux.py` | Generate a new image with concept heatmaps (Flux 1) |
-| `generate_image_flux2.py` | Generate a new image with concept heatmaps (Flux 2) |
-| `encode_image_sd3.py` | Encode an existing image and generate concept heatmaps (SD3) |
-| `generate_image_sd3.py` | Generate a new image with concept heatmaps (SD3) |
-| `generate_video_cogvideox.py` | Generate a video with concept attention heatmaps (CogVideoX) |
-
-To run an example:
-```bash
-cd examples
-python generate_image_flux.py
-```
-
-Output images will be saved to `examples/results/flux/` or `examples/results/flux2/` depending on the model.
-
-# Concept Attention Also Works on Video!
-
-https://github.com/user-attachments/assets/d4a0e100-1fc3-44c1-ae9e-09fb420bd003
-
-ConceptAttention can also be applied to video generation models. Here's an example using CogVideoX:
-
+**Cell 2 — Load pipelines** (downloads Flux Schnell weights on first run, ~24 GB)
 ```python
-from concept_attention.cogvideox import ModifiedCogVideoXTransformer3DModel, ModifiedCogVideoXPipeline
-from diffusers.utils import export_to_video
+from concept_attention.flux.pipeline import ConceptAttentionFluxPipeline
+from concept_attention.flux.faceswap_pipeline import ConceptAttentionFaceSwapPipeline
 
-# Load model
-model_id = "THUDM/CogVideoX-5b"
-transformer = ModifiedCogVideoXTransformer3DModel.from_pretrained(
-    model_id, subfolder="transformer", torch_dtype=torch.bfloat16
-)
-pipe = ModifiedCogVideoXPipeline.from_pretrained(
-    model_id, transformer=transformer, torch_dtype=torch.bfloat16
-).to("cuda")
-
-# Generate video with concept attention
-prompt = "A golden retriever with a ball by a tree in the grass."
-concepts = ["dog", "grass", "sky", "tree", "ball"]
-
-video, concept_attention_dict = pipe(
-    prompt=prompt,
-    concepts=concepts,
-    num_frames=81,
-    num_inference_steps=50,
-    concept_attention_kwargs={
-        "timesteps": list(range(0, 50)),
-        "layers": list(range(0, 30)),
-    }
-)
-
-# Save video
-export_to_video(video.frames[0], "output.mov", fps=8)
-
-# Access concept attention maps (shape: num_concepts, num_frames, height, width)
-concept_attention_maps = concept_attention_dict["concept_attention_maps"]
+concept_pipe  = ConceptAttentionFluxPipeline(model_name="flux-schnell", device="cuda:0")
+faceswap_pipe = ConceptAttentionFaceSwapPipeline(concept_pipeline=concept_pipe)
 ```
 
-See the full example at [`examples/generate_video_cogvideox.py`](examples/generate_video_cogvideox.py). 
-
-# Experiments
-
-Each of our experiments are in separate directories in [`/experiments`](experiments). 
-
-You can run one for example like this
-```bash
-cd experiments/qualitative_baseline_comparison
-python generate_image.py # Generates test image using flux
-python plot_flux_concept_attention.py # Generates concept attention maps and saves them in results. 
-```
-
-# Data Setup
-To use ImageNetSegmentation you will need to download `gtsegs_ijcv.mat` into [`/experiments/imagenet_segmentation/data`](experiments/imagenet_segmentation/data/). 
-
-```bash
-cd experiments/imagenet_segmentation/data
-wget http://calvin-vision.net/bigstuff/proj-imagenet/data/gtsegs_ijcv.mat
-```
-
-
-# Bibtex
-
-```
-@misc{helbling2025conceptattentiondiffusiontransformerslearn,
-    title={ConceptAttention: Diffusion Transformers Learn Highly Interpretable Features}, 
-    author={Alec Helbling and Tuna Han Salih Meral and Ben Hoover and Pinar Yanardag and Duen Horng Chau},
-    year={2025},
-    eprint={2502.04320},
-    archivePrefix={arXiv},
-    primaryClass={cs.CV},
-    url={https://arxiv.org/abs/2502.04320}, 
-}
-```
-
-# Cell 1 — install
-!pip install -q fastapi "uvicorn[standard]" pyngrok python-multipart
-
-# Cell 2 — load pipeline
-from concept_attention.flux2 import ConceptAttentionFlux2Pipeline
-pipe = ConceptAttentionFlux2Pipeline(model_name="flux.2-dev", device="cuda:0")
-
-# Cell 3 — launch
+**Cell 3 — Launch the web server**
+```python
 from web.launch import launch
-url = launch(pipe, ngrok_authtoken="YOUR_TOKEN")  # prints the public URL
+
+NGROK_TOKEN = "YOUR_NGROK_TOKEN"   # free at https://dashboard.ngrok.com/
+url = launch(concept_pipe, faceswap_pipeline=faceswap_pipe, ngrok_authtoken=NGROK_TOKEN)
+# Prints the public URL — open it in any browser
+```
+
+**Cell 4 — Pull updates without restarting** (run after `git pull`)
+```python
+import importlib, subprocess, web.server, web.launch
+
+subprocess.run(["git", "pull"], cwd="/content/seeing-bias")
+importlib.reload(web.server)
+importlib.reload(web.launch)
+print("Modules reloaded — restart the server cell to apply changes")
+```
+
+> **Note:** After reloading modules you need to re-run Cell 3 (the launch cell). Because the uvicorn thread holds port 8000, pass `port=8001` on the second launch to avoid a bind conflict, or do a full runtime restart.
+
+---
+
+## Code Setup (local)
+
+Requires Python 3.10+, CUDA GPU with ≥ 16 GB VRAM (24+ GB recommended for 1024×1024).
+
+```bash
+git clone https://github.com/sbleeyouk/seeing-bias
+cd seeing-bias
+python -m venv venv && source venv/bin/activate
+pip install -e .
+pip install fastapi "uvicorn[standard]" python-multipart insightface onnxruntime-gpu opencv-python
+```
+
+Run the server:
+```python
+from concept_attention.flux.pipeline import ConceptAttentionFluxPipeline
+from concept_attention.flux.faceswap_pipeline import ConceptAttentionFaceSwapPipeline
+from web.server import run_server
+
+concept_pipe  = ConceptAttentionFluxPipeline(model_name="flux-schnell", device="cuda:0")
+faceswap_pipe = ConceptAttentionFaceSwapPipeline(concept_pipeline=concept_pipe)
+
+run_server(concept_pipe, faceswap_pipeline=faceswap_pipe, port=8000)
+# Open http://localhost:8000
+```
+
+---
+
+## Project Structure
+
+```
+seeing-bias/
+├── concept_attention/
+│   └── flux/
+│       ├── pipeline.py          # ConceptAttentionFluxPipeline — encode_image, compare_images
+│       ├── faceswap_pipeline.py # ConceptAttentionFaceSwapPipeline — swap_and_analyze
+│       └── image_generator.py   # FluxGenerator — model loading, offload management
+├── web/
+│   ├── server.py                # FastAPI app — REST + WebSocket endpoints
+│   ├── launch.py                # Colab/ngrok launcher
+│   └── static/
+│       ├── index.html           # Concept Attention Explorer UI
+│       ├── faceswap.html        # Face-Swap Attention Explorer UI
+│       └── brain.html           # Brain of AI — 3D force graph
+├── seeing_bias_run.ipynb        # Google Colab notebook
+├── requirements.txt
+└── setup.py
+```
+
+---
+
+## API Reference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/analyze` | Start a concept attention job |
+| `GET` | `/api/job/{id}` | Poll job status and results |
+| `WS` | `/ws/{id}` | Stream per-step heatmaps in real time |
+| `POST` | `/api/faceswap` | Start a face-swap + attention job |
+| `WS` | `/ws/faceswap/{id}` | Stream face-swap progress |
+| `POST` | `/api/brain/submit` | Submit a result to the Brain |
+| `GET` | `/api/brain` | Fetch graph data (nodes, links, images) |
+
+---
+
+## Models and Downloads
+
+| Model | Size | Source |
+|-------|------|--------|
+| Flux Schnell (transformer + VAE) | ~24 GB | HuggingFace `black-forest-labs/FLUX.1-schnell` |
+| T5 text encoder | ~5 GB | Auto via Flux |
+| CLIP text encoder | ~0.4 GB | Auto via Flux |
+| InsightFace buffalo_l | ~0.3 GB | Auto via insightface |
+| inswapper_128.onnx | ~0.5 GB | HuggingFace `Gourieff/ReActor` dataset |
+
+All models download automatically on first use and cache in `~/.cache/`.
+
+Flux Schnell requires accepting the license on HuggingFace before downloading:
+```bash
+huggingface-cli login
+```
+
+---
+
+## Credits
+
+- **ConceptAttention** — [Helblazer811 et al., 2025](https://arxiv.org/abs/2502.04320)
+- **Flux** — [Black Forest Labs](https://github.com/black-forest-labs/flux)
+- **InsightFace / inswapper** — [deepinsight](https://github.com/deepinsight/insightface)
